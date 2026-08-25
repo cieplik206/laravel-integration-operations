@@ -1,25 +1,46 @@
 # Laravel Integration Operations
 
-Installable boilerplate for a shared Laravel kernel that will own the technical
-lifecycle of durable provider operations.
+Provider-neutral Laravel foundation for durable integration operations and
+versioned provider SDKs.
 
-This repository currently contains package metadata, Laravel auto-discovery,
-quality tooling, and a no-op service provider only. It does not implement an
-operation state machine, persistence, queues, retries, reconciliation, or any
-provider-specific behavior yet.
+Version 0.1 provides the RT-1 boundary:
 
-## Planned boundary
+- immutable, versioned receipts, snapshots, scopes, contexts, failures, and
+  encoded results;
+- canonical JSON, SHA-256 content hashes, domain-separated HMAC lookup digests,
+  a versioned secret key ring, a UTC clock, and canonical ULIDs;
+- framework-neutral handler, retry, failure-classification, reconciliation,
+  projection, and result-codec contracts;
+- a trusted boot-only operation definition registry that freezes after Laravel
+  boots without constructing provider services or performing database, cache,
+  credential, or HTTP I/O;
+- a public provider conformance kit, strict Provider SPI 0.1 schema, and
+  read-only and single-effect reference definitions.
 
-The kernel will provide provider-agnostic integration mechanics such as:
+## Contracts
 
-- durable operation receipts and status queries;
-- idempotent intent registration;
-- leases, retries, recovery, and reconciliation lifecycle;
-- operation attempts and transition audit;
-- provider handler registration and technical telemetry.
+- [Provider SPI 0.1](docs/provider-spi-0.1.md) defines the provider/kernel
+  boundary, single-effect rule, reconciliation vocabulary, and terminal
+  contracts.
+- [Kernel Schema Specification 0.1](docs/schema-0.1.md) freezes the future
+  persistence blueprint without shipping migrations or running DDL.
+- [Provider SPI JSON Schema](contracts/provider-spi-0.1.schema.json) validates
+  provider-neutral conformance manifests for both a read-only operation and a
+  single-effect operation.
 
-The package must never depend on Fakturownia, Allegro, or application domain
-models. Provider semantics belong to provider SDKs, while cross-provider
+The JSON artifacts are conformance specifications, not executable runtime
+configuration. Never hydrate service references or class names from database
+rows, queue payloads, requests, or other persisted data.
+
+## Scope boundary
+
+Version 0.1 intentionally does not ship the RT-2 runtime: there is no operation
+persistence, migration, state-machine executor, queue worker, lease manager,
+retry scheduler, or runtime reconciliation orchestration yet. The schema
+specification describes that future boundary but does not activate it.
+
+The kernel does not depend on Fakturownia, Allegro, Saloon, or application
+domain models. Provider semantics belong to provider SDKs, while cross-provider
 business workflows remain in the consuming application.
 
 ## Requirements
@@ -27,28 +48,20 @@ business workflows remain in the consuming application.
 - PHP 8.4 or newer;
 - Laravel 13.
 
-Additional PHP, Laravel, and database versions will be declared only after they
-are covered by CI.
+## Installation
+
+    composer require cieplik206/laravel-integration-operations:^0.1
+
+Laravel discovers the package service provider automatically. Provider SDKs
+must register their operation definitions and exact final singleton extension
+classes during application boot; the registry rejects later registration or a
+changed container binding.
 
 ## Development setup
 
     composer install
-    composer validate --strict --no-check-publish
-    composer test
-    composer analyse
-    vendor/bin/pint --test src tests
-    composer audit
-
-## Development installation
-
-Until the first tagged release, Composer exposes the default branch as
-`dev-main`:
-
-    composer require cieplik206/laravel-integration-operations:dev-main
-
-Production deployment should eventually use tagged releases and a committed
-`composer.lock`, not a moving development branch.
+    composer check
 
 ## License
 
-The package is released under the MIT License in LICENSE.md.
+The package is released under the MIT License in [LICENSE.md](LICENSE.md).

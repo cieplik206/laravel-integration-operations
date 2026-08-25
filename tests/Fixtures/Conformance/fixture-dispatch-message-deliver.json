@@ -1,0 +1,80 @@
+{
+    "$schema": "../../../contracts/provider-spi-0.1.schema.json",
+    "contract": "cieplik206.integration-operations.provider-spi",
+    "spi_version": "0.1",
+    "provider": "fixture_dispatch",
+    "operations": [
+        {
+            "operation_type": "fixture_dispatch.message.deliver",
+            "versions": {
+                "payload_schema": 1,
+                "handler": 1,
+                "result_schema": 1
+            },
+            "effect": {
+                "max_remote_writes": 1,
+                "boundary": "required"
+            },
+            "extension_points": [
+                "operation_handler",
+                "failure_classifier",
+                "retry_policy",
+                "reconciliation_strategy",
+                "result_codec",
+                "outcome_projector"
+            ],
+            "retry": {
+        "mode": "effect_aware",
+        "safe_retry_evidence": [
+          "request_not_started"
+        ],
+                "ambiguous_effect_action": "reconcile"
+            },
+            "reconciliation": {
+                "mode": "required",
+                "results": [
+                    "found_exact",
+                    "absent_conclusive",
+                    "inconclusive",
+                    "ambiguous_matches"
+                ]
+            },
+            "terminal_contracts": {
+                "succeeded": {
+                    "status": "succeeded",
+                    "disposition": "succeeded",
+                    "terminal": true,
+                    "effect_states": [
+                        "applied"
+                    ],
+                    "result_availability": [
+                        "available"
+                    ]
+                },
+                "failed": {
+                    "status": "failed",
+                    "disposition": "failed",
+                    "terminal": true,
+                    "effect_states": [
+                        "not_started",
+                        "not_applied"
+                    ],
+                    "result_availability": [
+                        "not_applicable"
+                    ]
+                },
+                "cancelled": {
+                    "status": "cancelled",
+                    "disposition": "cancelled",
+                    "terminal": true,
+                    "effect_states": [
+                        "not_started"
+                    ],
+                    "result_availability": [
+                        "not_applicable"
+                    ]
+                }
+            }
+        }
+    ]
+}

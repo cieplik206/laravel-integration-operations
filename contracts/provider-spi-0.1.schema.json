@@ -1,0 +1,454 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/cieplik206/laravel-integration-operations/contracts/provider-spi-0.1.schema.json",
+    "title": "Integration Operations Provider SPI 0.1 conformance manifest",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "$schema",
+        "contract",
+        "spi_version",
+        "provider",
+        "operations"
+    ],
+    "properties": {
+        "$schema": {
+            "type": "string",
+            "pattern": "provider-spi-0\\.1\\.schema\\.json$"
+        },
+        "contract": {
+            "const": "cieplik206.integration-operations.provider-spi"
+        },
+        "spi_version": {
+            "const": "0.1"
+        },
+        "provider": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{1,63}$"
+        },
+        "operations": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+                "$ref": "#/$defs/operation"
+            }
+        }
+    },
+    "$defs": {
+        "operation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "operation_type",
+                "versions",
+                "effect",
+                "extension_points",
+                "retry",
+                "reconciliation",
+                "terminal_contracts"
+            ],
+            "properties": {
+                "operation_type": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){2,}$"
+                },
+                "versions": {
+                    "$ref": "#/$defs/versions"
+                },
+                "effect": {
+                    "$ref": "#/$defs/effect"
+                },
+                "extension_points": {
+                    "type": "array",
+                    "minItems": 5,
+                    "uniqueItems": true,
+                    "items": {
+                        "enum": [
+                            "operation_handler",
+                            "failure_classifier",
+                            "retry_policy",
+                            "reconciliation_strategy",
+                            "result_codec",
+                            "outcome_projector"
+                        ]
+                    }
+                },
+                "retry": {
+                    "$ref": "#/$defs/retry"
+                },
+                "reconciliation": {
+                    "$ref": "#/$defs/reconciliation"
+                },
+                "terminal_contracts": {
+                    "$ref": "#/$defs/terminalContracts"
+                }
+            },
+            "oneOf": [
+                {
+                    "$ref": "#/$defs/readOnlyShape"
+                },
+                {
+                    "$ref": "#/$defs/singleEffectShape"
+                }
+            ]
+        },
+        "readOnlyShape": {
+            "properties": {
+                "effect": {
+                    "const": {
+                        "max_remote_writes": 0,
+                        "boundary": "forbidden"
+                    }
+                },
+                "extension_points": {
+                    "not": {
+                        "contains": {
+                            "const": "reconciliation_strategy"
+                        }
+                    }
+                },
+                "retry": {
+                    "properties": {
+                        "mode": {
+                            "const": "read_safe"
+                        },
+                        "safe_retry_evidence": {
+                            "not": {
+                                "contains": {
+                                    "const": "absent_conclusive"
+                                }
+                            }
+                        },
+                        "ambiguous_effect_action": {
+                            "const": "not_applicable"
+                        }
+                    }
+                },
+                "reconciliation": {
+                    "const": {
+                        "mode": "none",
+                        "results": []
+                    }
+                },
+                "terminal_contracts": {
+                    "properties": {
+                        "succeeded": {
+                            "properties": {
+                                "effect_states": {
+                                    "const": [
+                                        "not_started"
+                                    ]
+                                }
+                            }
+                        },
+                        "failed": {
+                            "properties": {
+                                "effect_states": {
+                                    "const": [
+                                        "not_started"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "singleEffectShape": {
+            "properties": {
+                "effect": {
+                    "const": {
+                        "max_remote_writes": 1,
+                        "boundary": "required"
+                    }
+                },
+        "extension_points": {
+          "minItems": 6,
+          "contains": {
+            "const": "reconciliation_strategy"
+          }
+                },
+                "retry": {
+                    "properties": {
+            "mode": {
+              "const": "effect_aware"
+            },
+            "safe_retry_evidence": {
+              "const": [
+                "request_not_started"
+              ]
+            },
+                        "ambiguous_effect_action": {
+                            "enum": [
+                                "reconcile",
+                                "manual_review"
+                            ]
+                        }
+                    }
+                },
+                "reconciliation": {
+                    "const": {
+                        "mode": "required",
+                        "results": [
+                            "found_exact",
+                            "absent_conclusive",
+                            "inconclusive",
+                            "ambiguous_matches"
+                        ]
+                    }
+                },
+                "terminal_contracts": {
+                    "properties": {
+                        "succeeded": {
+                            "properties": {
+                                "effect_states": {
+                                    "const": [
+                                        "applied"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "versions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "payload_schema",
+                "handler",
+                "result_schema"
+            ],
+            "properties": {
+                "payload_schema": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "handler": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "result_schema": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "effect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "max_remote_writes",
+                "boundary"
+            ],
+            "properties": {
+                "max_remote_writes": {
+                    "type": "integer",
+                    "enum": [
+                        0,
+                        1
+                    ]
+                },
+                "boundary": {
+                    "enum": [
+                        "forbidden",
+                        "required"
+                    ]
+                }
+            }
+        },
+        "retry": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "mode",
+                "safe_retry_evidence",
+                "ambiguous_effect_action"
+            ],
+            "properties": {
+                "mode": {
+                    "enum": [
+                        "read_safe",
+                        "effect_aware"
+                    ]
+                },
+                "safe_retry_evidence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+            "enum": [
+              "request_not_started",
+              "definitive_transient_read"
+            ]
+                    }
+                },
+                "ambiguous_effect_action": {
+                    "enum": [
+                        "not_applicable",
+                        "reconcile",
+                        "manual_review"
+                    ]
+                }
+            }
+        },
+        "reconciliation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "mode",
+                "results"
+            ],
+            "properties": {
+                "mode": {
+                    "enum": [
+                        "none",
+                        "required"
+                    ]
+                },
+                "results": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "enum": [
+                            "found_exact",
+                            "absent_conclusive",
+                            "inconclusive",
+                            "ambiguous_matches"
+                        ]
+                    }
+                }
+            }
+        },
+        "terminalContracts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "succeeded",
+                "failed",
+                "cancelled"
+            ],
+            "properties": {
+                "succeeded": {
+                    "$ref": "#/$defs/succeededTerminal"
+                },
+                "failed": {
+                    "$ref": "#/$defs/failedTerminal"
+                },
+                "cancelled": {
+                    "$ref": "#/$defs/cancelledTerminal"
+                }
+            }
+        },
+        "succeededTerminal": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "status",
+                "disposition",
+                "terminal",
+                "effect_states",
+                "result_availability"
+            ],
+            "properties": {
+                "status": {
+                    "const": "succeeded"
+                },
+                "disposition": {
+                    "const": "succeeded"
+                },
+                "terminal": {
+                    "const": true
+                },
+                "effect_states": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                        "enum": [
+                            "not_started",
+                            "applied"
+                        ]
+                    }
+                },
+                "result_availability": {
+                    "const": [
+                        "available"
+                    ]
+                }
+            }
+        },
+        "failedTerminal": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "status",
+                "disposition",
+                "terminal",
+                "effect_states",
+                "result_availability"
+            ],
+            "properties": {
+                "status": {
+                    "const": "failed"
+                },
+                "disposition": {
+                    "const": "failed"
+                },
+                "terminal": {
+                    "const": true
+                },
+                "effect_states": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                        "enum": [
+                            "not_started",
+                            "not_applied"
+                        ]
+                    }
+                },
+                "result_availability": {
+                    "const": [
+                        "not_applicable"
+                    ]
+                }
+            }
+        },
+        "cancelledTerminal": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "status",
+                "disposition",
+                "terminal",
+                "effect_states",
+                "result_availability"
+            ],
+            "properties": {
+                "status": {
+                    "const": "cancelled"
+                },
+                "disposition": {
+                    "const": "cancelled"
+                },
+                "terminal": {
+                    "const": true
+                },
+                "effect_states": {
+                    "const": [
+                        "not_started"
+                    ]
+                },
+                "result_availability": {
+                    "const": [
+                        "not_applicable"
+                    ]
+                }
+            }
+        }
+    }
+}
