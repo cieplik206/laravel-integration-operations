@@ -1,0 +1,15 @@
+/vendor/
+/build/
+/.phpunit.cache/
+/.phpunit.result.cache
+/composer.lock
+
+/.env
+/.env.*
+!/.env.example
+/auth.json
+
+/phpunit.xml
+/.idea/
+/.vscode/
+.DS_Store
