@@ -16,6 +16,7 @@ use Cieplik206\IntegrationOperations\Enums\FailureDisposition;
 use Cieplik206\IntegrationOperations\Enums\LeasePurpose;
 use Cieplik206\IntegrationOperations\Enums\OperationStatus;
 use Cieplik206\IntegrationOperations\Enums\OperationTelemetryEvent;
+use Cieplik206\IntegrationOperations\Enums\PollPurpose;
 use Cieplik206\IntegrationOperations\Enums\ReconciliationResult;
 use Cieplik206\IntegrationOperations\Enums\ReconciliationTrigger;
 use Cieplik206\IntegrationOperations\Enums\ResultAvailability;
@@ -138,6 +139,70 @@ final readonly class DatabaseOperationFinalizer
                 $observedAt,
                 null,
                 null,
+            );
+        });
+    }
+
+    public function continuePolling(
+        LoadedOperation $loaded,
+        AuthoritativeOperationDefinition $definition,
+    ): void {
+        $this->transaction(function (Connection $connection) use ($loaded, $definition): void {
+            [$operation, $attempt, $fromStatus, $fromEffect, $observedAt] = $this->lockClaimedLifecycle(
+                $connection,
+                $loaded,
+            );
+
+            if ($fromStatus !== OperationStatus::Processing
+                || $fromEffect !== EffectState::PossiblyApplied
+                || $definition->polling === null
+                || $definition->pollingStrategy === null) {
+                throw new OperationConcurrencyViolation;
+            }
+
+            $stateUpdated = $connection->table('integration_operation_authoritative_states')
+                ->where('operation_id', $loaded->lease->claim()->operationId->value)
+                ->where('poll_purpose', PollPurpose::Preflight->value)
+                ->where('result_availability', ResultAvailability::NotReady->value)
+                ->whereNull('terminal_proof_kind')
+                ->whereNotNull('poll_deadline_at')
+                ->update([
+                    'poll_purpose' => PollPurpose::Observation->value,
+                    'next_poll_at' => $observedAt,
+                    'updated_at' => $observedAt,
+                ]);
+
+            if ($stateUpdated !== 1) {
+                throw new OperationConcurrencyViolation;
+            }
+
+            $transition = $this->authoritativeStateMachine->transition(
+                $fromStatus,
+                $fromEffect,
+                OperationStatus::PollWait,
+                EffectState::Applied,
+                $definition->maximumRemoteWrites,
+                $definition->successEffectPolicy,
+            );
+
+            $this->finishAttempt(
+                $connection,
+                $loaded,
+                $attempt,
+                'awaiting_poll',
+                EffectState::Applied,
+                $observedAt,
+            );
+            $this->updateOperation(
+                $connection,
+                $loaded,
+                $operation,
+                $transition,
+                EffectState::Applied,
+                $observedAt,
+                null,
+                null,
+                'execution_polling_scheduled',
             );
         });
     }

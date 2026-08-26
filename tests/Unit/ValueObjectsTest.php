@@ -423,6 +423,16 @@ it('rejects mutable operation results and nested mutable references at every hol
         ->toThrow(InvalidArgumentException::class, 'canonical immutable');
 });
 
+it('marks an immutable execution observation for durable polling without changing terminal defaults', function (): void {
+    $result = new FakeOperationResult('poll-after-write');
+    $terminal = new ExecutionOutcome($result);
+    $polling = ExecutionOutcome::awaitPolling($result);
+
+    expect($terminal->requiresPolling)->toBeFalse()
+        ->and($polling->requiresPolling)->toBeTrue()
+        ->and($polling->result)->toBe($result);
+});
+
 it('rejects external references, self-cycles, and invalid UTF-8 keys in readonly result arrays', function (): void {
     $externalValue = 'before';
     $referenced = ['value' => &$externalValue];

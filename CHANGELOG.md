@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.1 - 2026-08-26
+
+- Allow a successful single-effect handler to release its execution lease and
+  continue through the authoritative durable polling lane without persisting a
+  premature terminal result.
+- Preserve the original polling deadline, switch the durable poll purpose from
+  preflight to observation, and prove the write-to-poll transition against the
+  PostgreSQL runtime.
+
 ## 0.3.0 - 2026-08-26
 
 - Add the authoritative Provider SPI v2 registry with typed activation,

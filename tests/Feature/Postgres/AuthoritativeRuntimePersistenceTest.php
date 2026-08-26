@@ -460,6 +460,120 @@ it('executes a poll-first authoritative operation through a terminal scoped resu
         ->and(FakeAuthoritativePollingExtensions::$constructionAttempts)->toBeGreaterThan(0);
 });
 
+it('releases the write lease and resumes durable observation polling after one successful send', function (): void {
+    $configuration = requireAuthoritativePostgresConfiguration();
+    config()->set('database.connections.integration_operations_authoritative_test', $configuration);
+    config()->set('integration-operations.database.connection', 'integration_operations_authoritative_test');
+    config()->set('integration-operations.hmac.active_version', 1);
+    config()->set('integration-operations.hmac.keys', [
+        1 => 'base64:'.base64_encode(str_repeat('h', 32)),
+    ]);
+    config()->set('integration-operations.encryption.active_version', 1);
+    config()->set('integration-operations.encryption.cipher', 'AES-256-GCM');
+    config()->set('integration-operations.encryption.keys', [
+        1 => 'base64:'.base64_encode(str_repeat('e', 32)),
+    ]);
+    config()->set('integration-operations.local_references.allowed_types', ['fixture_resource']);
+    config()->set('integration-operations.leases', [
+        'seconds' => 120,
+        'heartbeat_seconds' => 30,
+        'connect_timeout_seconds' => 10,
+        'request_timeout_seconds' => 60,
+        'safety_margin_seconds' => 15,
+    ]);
+    config()->set('integration-operations.writer_fences', [[
+        'provider' => 'fixture_authoritative',
+        'connection' => 'tenant:authoritative',
+        'operation_type' => 'fixture_authoritative.resource.ensure',
+        'generation' => 1,
+        'owner_mode' => OwnerMode::On->value,
+        'cohort' => null,
+    ]]);
+
+    /** @var DatabaseManager $database */
+    $database = app('db');
+    $database->purge('integration_operations_authoritative_test');
+    $connection = $database->connection('integration_operations_authoritative_test');
+    $currentDatabase = $connection->selectOne('SELECT current_database() AS database_name');
+
+    if (! $currentDatabase instanceof stdClass || ! is_string($currentDatabase->database_name ?? null)) {
+        throw new RuntimeException('Unable to verify the connected authoritative PostgreSQL test database.');
+    }
+
+    PostgresTestDatabaseGuard::assertConnectedDatabase(
+        $configuration['database'],
+        $currentDatabase->database_name,
+    );
+
+    expect(app(ConsoleKernel::class)->call('migrate:fresh', [
+        '--database' => 'integration_operations_authoritative_test',
+        '--path' => dirname(__DIR__, 3).'/database/migrations',
+        '--realpath' => true,
+        '--force' => true,
+    ]))->toBe(0);
+
+    app()->instance(DurableAcceptanceNotifier::class, new RecordingAcceptanceNotifier);
+    /** @var OperationCoordinator $coordinator */
+    $coordinator = app(OperationCoordinator::class);
+    $receipt = $coordinator->accept(new AcceptOperation(
+        scope: IntegrationScope::of('fixture_authoritative', 'tenant:authoritative'),
+        operationType: new OperationType('fixture_authoritative.resource.ensure'),
+        versions: new OperationDefinitionVersions(1, 1, 1),
+        intent: new IntentIdentity(
+            'fixture_resource',
+            'poll',
+            new LocalReference('fixture_resource', 'resource:send-then-poll'),
+        ),
+        payload: new CanonicalObject(['resource' => 'send-then-poll']),
+        context: IntegrationContext::make('correlation:authoritative-send-then-poll'),
+    ));
+
+    FakeAuthoritativePollingExtensions::$sendRequiredOnce = true;
+    FakeAuthoritativeLegacyProviderExtensions::$openEffectBoundary = true;
+    FakeAuthoritativeLegacyProviderExtensions::$awaitPolling = true;
+
+    try {
+        app(OperationProcessor::class)->process($receipt->operationId);
+        app(OperationProcessor::class)->process($receipt->operationId);
+
+        $afterSend = $connection->table('integration_operations')
+            ->where('id', $receipt->operationId->value)
+            ->first();
+        $afterSendState = $connection->table('integration_operation_authoritative_states')
+            ->where('operation_id', $receipt->operationId->value)
+            ->first();
+
+        expect($afterSend?->status)->toBe(OperationStatus::PollWait->value)
+            ->and($afterSend?->effect_state)->toBe(EffectState::Applied->value)
+            ->and($afterSend?->active_attempt_id)->toBeNull()
+            ->and($afterSend?->lease_owner)->toBeNull()
+            ->and($afterSendState?->poll_purpose)->toBe('observation')
+            ->and($afterSendState?->next_poll_at)->not->toBeNull()
+            ->and($afterSendState?->result_availability)->toBe(ResultAvailability::NotReady->value)
+            ->and($connection->table('integration_operation_results')
+                ->where('operation_id', $receipt->operationId->value)
+                ->count())->toBe(0);
+
+        app(OperationProcessor::class)->process($receipt->operationId);
+    } finally {
+        FakeAuthoritativePollingExtensions::$sendRequiredOnce = false;
+        FakeAuthoritativeLegacyProviderExtensions::$openEffectBoundary = false;
+        FakeAuthoritativeLegacyProviderExtensions::$awaitPolling = false;
+    }
+
+    /** @var AuthoritativeOperationQuery $query */
+    $query = app(AuthoritativeOperationQuery::class);
+    $terminal = $query
+        ->within(IntegrationScope::of('fixture_authoritative', 'tenant:authoritative'))
+        ->find($receipt->operationId);
+
+    expect($terminal?->status)->toBe(OperationStatus::Succeeded)
+        ->and($terminal?->effectState)->toBe(EffectState::Applied)
+        ->and($terminal?->resultAvailability)->toBe(ResultAvailability::Available)
+        ->and($terminal?->terminalProofKind)->toBe(TerminalProofKind::Poll)
+        ->and($terminal?->result)->toEqual(new FakeAuthoritativeOperationResult('polled'));
+});
+
 it('terminalizes an authoritative provider rejection as failed applied with an available result', function (): void {
     $configuration = requireAuthoritativePostgresConfiguration();
     config()->set('database.connections.integration_operations_authoritative_test', $configuration);

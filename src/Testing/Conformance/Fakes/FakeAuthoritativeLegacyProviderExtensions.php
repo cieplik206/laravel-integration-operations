@@ -34,6 +34,8 @@ final class FakeAuthoritativeLegacyProviderExtensions implements FailureClassifi
 
     public static bool $throwAfterBoundary = false;
 
+    public static bool $awaitPolling = false;
+
     public function __construct()
     {
         self::$constructionAttempts++;
@@ -53,7 +55,11 @@ final class FakeAuthoritativeLegacyProviderExtensions implements FailureClassifi
             throw new \RuntimeException('Fixture transport lost the response after opening the boundary.');
         }
 
-        return new ExecutionOutcome(new FakeAuthoritativeOperationResult('executed'));
+        $result = new FakeAuthoritativeOperationResult('executed');
+
+        return self::$awaitPolling
+            ? ExecutionOutcome::awaitPolling($result)
+            : new ExecutionOutcome($result);
     }
 
     public function classify(OperationView $operation, Throwable $failure): FailureClassification

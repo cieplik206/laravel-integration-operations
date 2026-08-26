@@ -14,8 +14,15 @@ use Cieplik206\IntegrationOperations\Support\OperationResultInvariant;
  */
 final readonly class ExecutionOutcome
 {
-    public function __construct(public OperationResult $result)
-    {
+    public function __construct(
+        public OperationResult $result,
+        public bool $requiresPolling = false,
+    ) {
         OperationResultInvariant::assertImmutable($result);
+    }
+
+    public static function awaitPolling(OperationResult $observation): self
+    {
+        return new self($observation, true);
     }
 }

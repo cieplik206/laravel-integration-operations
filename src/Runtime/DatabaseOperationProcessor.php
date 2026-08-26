@@ -106,6 +106,22 @@ final readonly class DatabaseOperationProcessor implements OperationProcessor
                 return;
             }
 
+            if ($outcome->requiresPolling) {
+                $authoritative = $this->authoritativeDefinition($loaded);
+
+                if (! $authoritative instanceof AuthoritativeOperationDefinition
+                    || $authoritative->polling === null
+                    || $authoritative->pollingStrategy === null) {
+                    $this->finalizer->runtimeFailure($loaded, 'execution_polling_contract_unavailable');
+
+                    return;
+                }
+
+                $this->finalizer->continuePolling($loaded, $authoritative);
+
+                return;
+            }
+
             $codec = $this->resolve($loaded->definition->resultCodec, OperationResultCodec::class);
             $projector = $this->resolve($loaded->definition->outcomeProjector, OutcomeProjector::class);
             $encodedResult = $this->encode($loaded, $codec, $outcome);
