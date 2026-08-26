@@ -195,6 +195,39 @@ final class DefinitionRegistry
         return $this->definitions["{$provider->value}|{$operationType->value}|{$handlerVersion}"] ?? null;
     }
 
+    public function runtimeBindingsAreAvailable(
+        OperationDefinition $definition,
+        ContainerBindingInspector $bindings,
+    ): bool {
+        if (! $this->frozen || $this->find(
+            $definition->provider,
+            $definition->operationType,
+            $definition->versions->handler,
+        ) !== $definition) {
+            return false;
+        }
+
+        foreach ($definition->extensionPoints() as $extensionPoint) {
+            $reference = $extensionPoint['reference'];
+
+            if ($reference === null) {
+                continue;
+            }
+
+            $frozenBinding = $this->trustedServiceBindings[$this->serviceTuple($reference)] ?? null;
+            $currentBinding = $bindings->exactSelfBinding($reference->serviceId, $extensionPoint['contract']);
+
+            if ($frozenBinding === null
+                || $currentBinding === null
+                || ! $frozenBinding->equals($currentBinding)
+                || $bindings->wasResolved($reference->serviceId)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /** @return list<OperationDefinition> */
     public function all(): array
     {

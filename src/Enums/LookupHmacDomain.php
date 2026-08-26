@@ -12,4 +12,5 @@ enum LookupHmacDomain: string
     case Context = 'context';
     case Correlation = 'correlation';
     case Cohort = 'cohort';
+    case Actor = 'actor';
 }

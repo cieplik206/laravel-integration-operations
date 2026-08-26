@@ -11,6 +11,7 @@ use Cieplik206\IntegrationOperations\Contracts\OperationResultCodec;
 use Cieplik206\IntegrationOperations\Contracts\OutcomeProjector;
 use Cieplik206\IntegrationOperations\Contracts\ReconciliationStrategy;
 use Cieplik206\IntegrationOperations\Contracts\RetryPolicy;
+use Cieplik206\IntegrationOperations\Registry\ManagedMutationIdentityContract;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinition;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinitionVersions;
 use Cieplik206\IntegrationOperations\Registry\ServiceReference;
@@ -30,6 +31,11 @@ final class FakeSingleEffectDefinitionProvider implements OperationDefinitionPro
             provider: self::provider(),
             operationType: new OperationType('fixture_dispatch.message.deliver'),
             versions: new OperationDefinitionVersions(1, 1, 1),
+            managedMutationIdentity: new ManagedMutationIdentityContract(
+                resourceType: 'fixture_resource',
+                localReferenceType: 'fixture_resource',
+                semanticSlots: ['default', 'secondary'],
+            ),
             handler: new ServiceReference(FakeProviderExtensions::class, OperationHandler::class),
             failureClassifier: new ServiceReference(FakeProviderExtensions::class, FailureClassifier::class),
             retryPolicy: new ServiceReference(FakeProviderExtensions::class, RetryPolicy::class),

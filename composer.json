@@ -27,9 +27,19 @@
         "source": "https://github.com/cieplik206/laravel-integration-operations"
     },
     "require": {
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*",
         "php": "^8.4",
+        "illuminate/bus": "^13.0",
+        "illuminate/cache": "^13.0",
+        "illuminate/console": "^13.0",
         "illuminate/container": "^13.0",
         "illuminate/contracts": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/encryption": "^13.0",
+        "illuminate/events": "^13.0",
+        "illuminate/queue": "^13.0",
+        "illuminate/redis": "^13.0",
         "illuminate/support": "^13.0",
         "symfony/uid": "^7.4|^8.0"
     },
@@ -53,6 +63,9 @@
         }
     },
     "extra": {
+        "branch-alias": {
+            "dev-main": "0.2.x-dev"
+        },
         "laravel": {
             "providers": [
                 "Cieplik206\\IntegrationOperations\\IntegrationOperationsServiceProvider"
@@ -61,14 +74,35 @@
     },
     "scripts": {
         "test": "pest",
+        "test:pgsql": "pest --fail-on-skipped --fail-on-empty-test-suite tests/Feature/Postgres",
+        "test:redis": "pest --fail-on-skipped --fail-on-empty-test-suite tests/Feature/Redis",
+        "test:compatibility:min": [
+            "@composer update --prefer-lowest --prefer-stable --no-interaction --no-progress",
+            "@test"
+        ],
+        "test:compatibility:locked": [
+            "git ls-files --error-unmatch composer.lock",
+            "@php -r \"if (! is_file('composer.lock')) { fwrite(STDERR, 'A committed composer.lock is required for the locked compatibility gate.'.PHP_EOL); exit(1); }\"",
+            "@composer install --no-interaction --no-progress",
+            "@test"
+        ],
+        "test:compatibility:latest": [
+            "@composer update --prefer-stable --no-interaction --no-progress",
+            "@test"
+        ],
         "analyse": "phpstan analyse",
-        "format": "pint src tests",
+        "format": "pint src tests config database",
+        "format:check": "pint --test src tests config database",
+        "quality:validate": "@composer validate --strict",
+        "security:audit": "@composer audit",
         "check": [
-            "composer validate --strict --no-check-publish",
-            "pint --test src tests",
+            "@quality:validate",
+            "@format:check",
             "@analyse",
             "@test",
-            "composer audit"
+            "@test:pgsql",
+            "@test:redis",
+            "@security:audit"
         ]
     },
     "minimum-stability": "stable",

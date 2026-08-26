@@ -267,6 +267,9 @@ function copyOperationDefinition(OperationDefinition $definition, array $replace
         operationType: $replace['operationType'] ?? $definition->operationType,
         versions: $replace['versions'] ?? $definition->versions,
         maximumRemoteWrites: $replace['maximumRemoteWrites'] ?? $definition->maximumRemoteWrites,
+        managedMutationIdentity: array_key_exists('managedMutationIdentity', $replace)
+            ? $replace['managedMutationIdentity']
+            : $definition->managedMutationIdentity,
         boundaryMode: $replace['boundaryMode'] ?? $definition->boundaryMode,
         retryMode: $replace['retryMode'] ?? $definition->retryMode,
         safeRetryEvidence: $replace['safeRetryEvidence'] ?? $definition->safeRetryEvidence,
@@ -401,6 +404,22 @@ it('keeps absent conclusive out of the same-operation write retry budget', funct
 
     expect((new OperationDefinitionValidator)->violations($invalid))
         ->toContain('single-effect SPI 0.1 permits retry only before the effect boundary is consumed');
+});
+
+it('requires a managed mutation identity contract only for single-effect definitions', function (): void {
+    $singleEffect = copyOperationDefinition(
+        firstRuntimeDefinition(FakeSingleEffectDefinitionProvider::class),
+        ['managedMutationIdentity' => null],
+    );
+    $readOnly = copyOperationDefinition(
+        firstRuntimeDefinition(FakeReadDefinitionProvider::class),
+        ['managedMutationIdentity' => firstRuntimeDefinition(FakeSingleEffectDefinitionProvider::class)->managedMutationIdentity],
+    );
+
+    expect((new OperationDefinitionValidator)->violations($singleEffect))
+        ->toContain('single-effect operation must declare a managed mutation identity contract')
+        ->and((new OperationDefinitionValidator)->violations($readOnly))
+        ->toContain('read-only operation must not declare a managed mutation identity contract');
 });
 
 it('rejects duplicate read-only safe retry evidence', function (): void {

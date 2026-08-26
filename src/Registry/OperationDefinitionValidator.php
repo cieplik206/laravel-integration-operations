@@ -74,6 +74,10 @@ final class OperationDefinitionValidator
     {
         $violations = [];
 
+        if ($definition->managedMutationIdentity !== null) {
+            $violations[] = 'read-only operation must not declare a managed mutation identity contract';
+        }
+
         if ($definition->boundaryMode !== BoundaryMode::Forbidden) {
             $violations[] = 'read-only operation must forbid the effect boundary';
         }
@@ -111,6 +115,10 @@ final class OperationDefinitionValidator
     private function singleEffectViolations(OperationDefinition $definition): array
     {
         $violations = [];
+
+        if ($definition->managedMutationIdentity === null) {
+            $violations[] = 'single-effect operation must declare a managed mutation identity contract';
+        }
 
         if ($definition->boundaryMode !== BoundaryMode::Required) {
             $violations[] = 'single-effect operation must require one effect boundary';

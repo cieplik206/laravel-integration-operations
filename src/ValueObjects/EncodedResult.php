@@ -12,6 +12,10 @@ use InvalidArgumentException;
 /** @api */
 final readonly class EncodedResult
 {
+    public const int HardMaximumCanonicalBytes = 262_144;
+
+    private const int MaximumKeyBytes = 191;
+
     /** @var array<string, mixed> */
     public array $payload;
 
@@ -25,17 +29,28 @@ final readonly class EncodedResult
             throw new InvalidArgumentException('Result type is invalid.');
         }
 
-        if ($schemaVersion < 1) {
-            throw new InvalidArgumentException('Result schema version must be positive.');
+        if ($schemaVersion < 1 || $schemaVersion > 65_535) {
+            throw new InvalidArgumentException('Result schema version is invalid.');
         }
 
+        ImmutableValueSanitizer::assertBoundedCanonicalGraph(
+            $payload,
+            'Encoded result payload',
+            self::HardMaximumCanonicalBytes,
+            self::HardMaximumCanonicalBytes,
+            self::MaximumKeyBytes,
+        );
         $this->payload = ImmutableValueSanitizer::canonicalMap($payload, 'Encoded result payload');
-        (new CanonicalJsonV1)->encode(new CanonicalObject($this->payload));
+
+        if ($this->canonicalByteLength() > self::HardMaximumCanonicalBytes) {
+            throw new InvalidArgumentException('Encoded result exceeds its canonical byte limit.');
+        }
     }
 
     public static function isValidResultType(string $resultType): bool
     {
-        return preg_match('/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/D', $resultType) === 1;
+        return strlen($resultType) <= 191
+            && preg_match('/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/D', $resultType) === 1;
     }
 
     /** @return array{result_type: string, schema_version: int, payload: array<string, mixed>} */
@@ -75,5 +90,10 @@ final readonly class EncodedResult
             && $this->schemaVersion === $other->schemaVersion
             && $canonicalJson->encode(new CanonicalObject($this->payload))
                 === $canonicalJson->encode(new CanonicalObject($other->payload));
+    }
+
+    public function canonicalByteLength(): int
+    {
+        return strlen((new CanonicalJsonV1)->encode(new CanonicalObject($this->toArray())));
     }
 }

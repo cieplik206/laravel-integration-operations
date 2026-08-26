@@ -2,7 +2,6 @@
 /build/
 /.phpunit.cache/
 /.phpunit.result.cache
-/composer.lock
 
 /.env
 /.env.*

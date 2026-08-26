@@ -18,6 +18,33 @@ final class ImmutableValueSanitizer
 
     private const MaximumValues = 10_000;
 
+    public static function assertBoundedCanonicalGraph(
+        mixed $value,
+        string $subject,
+        int $maximumAggregateBytes,
+        int $maximumStringBytes,
+        int $maximumKeyBytes = 191,
+    ): void {
+        if ($maximumAggregateBytes < 1 || $maximumStringBytes < 1 || $maximumKeyBytes < 1) {
+            throw new InvalidArgumentException("{$subject} graph bounds are invalid.");
+        }
+
+        $visitedValues = 0;
+        $aggregateBytes = 0;
+        $visitingObjects = [];
+        self::assertBoundedValue(
+            $value,
+            $subject,
+            $maximumAggregateBytes,
+            $maximumStringBytes,
+            $maximumKeyBytes,
+            $visitedValues,
+            $aggregateBytes,
+            $visitingObjects,
+            0,
+        );
+    }
+
     public static function canonicalValue(mixed $value, string $subject = 'Canonical value'): mixed
     {
         $visiting = [];
@@ -106,6 +133,31 @@ final class ImmutableValueSanitizer
         return $sanitized;
     }
 
+    /**
+     * @template T of object
+     *
+     * @param  array<mixed>  $values
+     * @param  class-string<T>  $class
+     * @return list<T>
+     */
+    public static function objectList(array $values, string $class, string $subject): array
+    {
+        $sanitized = self::deeplyImmutableValue($values, $subject);
+
+        if (! is_array($sanitized) || ! array_is_list($sanitized)) {
+            throw new InvalidArgumentException("{$subject} must be a list.");
+        }
+
+        foreach ($sanitized as $value) {
+            if (! $value instanceof $class) {
+                throw new InvalidArgumentException("{$subject} contains an invalid object value.");
+            }
+        }
+
+        /** @var list<T> $sanitized */
+        return $sanitized;
+    }
+
     public static function assertDeeplyImmutable(object $value, string $subject): void
     {
         self::deeplyImmutableValue($value, $subject);
@@ -126,6 +178,102 @@ final class ImmutableValueSanitizer
             $visitedValues,
             0,
         );
+    }
+
+    /** @param array<int, true> $visitingObjects */
+    private static function assertBoundedValue(
+        mixed $value,
+        string $subject,
+        int $maximumAggregateBytes,
+        int $maximumStringBytes,
+        int $maximumKeyBytes,
+        int &$visitedValues,
+        int &$aggregateBytes,
+        array &$visitingObjects,
+        int $depth,
+    ): void {
+        $visitedValues++;
+        $aggregateBytes += 2;
+
+        if ($depth > self::MaximumDepth
+            || $visitedValues > self::MaximumValues
+            || $aggregateBytes > $maximumAggregateBytes) {
+            throw new InvalidArgumentException("{$subject} graph exceeds its validation bounds.");
+        }
+
+        if ($value === null || is_bool($value) || is_int($value)) {
+            return;
+        }
+
+        if (is_string($value)) {
+            $length = strlen($value);
+            $aggregateBytes += $length;
+
+            if ($length > $maximumStringBytes
+                || $aggregateBytes > $maximumAggregateBytes
+                || preg_match('//u', $value) !== 1) {
+                throw new InvalidArgumentException("{$subject} contains an oversized or invalid string.");
+            }
+
+            return;
+        }
+
+        $canonicalObjectId = null;
+
+        if ($value instanceof CanonicalObject) {
+            $objectId = spl_object_id($value);
+
+            if (isset($visitingObjects[$objectId])) {
+                throw new InvalidArgumentException("{$subject} must not contain cyclic object graphs.");
+            }
+
+            $visitingObjects[$objectId] = true;
+            $canonicalObjectId = $objectId;
+            $value = $value->values;
+        }
+
+        if (! is_array($value)) {
+            throw new InvalidArgumentException("{$subject} may contain only canonical values.");
+        }
+
+        $isList = array_is_list($value);
+
+        foreach ($value as $key => $item) {
+            if (ReflectionReference::fromArrayElement($value, $key) !== null) {
+                throw new InvalidArgumentException("{$subject} arrays must not contain references.");
+            }
+
+            if (! $isList && ! is_string($key)) {
+                throw new InvalidArgumentException("{$subject} contains an invalid array.");
+            }
+
+            if (is_string($key)) {
+                $keyLength = strlen($key);
+                $aggregateBytes += $keyLength;
+
+                if ($keyLength > $maximumKeyBytes
+                    || $aggregateBytes > $maximumAggregateBytes
+                    || preg_match('//u', $key) !== 1) {
+                    throw new InvalidArgumentException("{$subject} contains an oversized or invalid key.");
+                }
+            }
+
+            self::assertBoundedValue(
+                $item,
+                $subject,
+                $maximumAggregateBytes,
+                $maximumStringBytes,
+                $maximumKeyBytes,
+                $visitedValues,
+                $aggregateBytes,
+                $visitingObjects,
+                $depth + 1,
+            );
+        }
+
+        if ($canonicalObjectId !== null) {
+            unset($visitingObjects[$canonicalObjectId]);
+        }
     }
 
     /**

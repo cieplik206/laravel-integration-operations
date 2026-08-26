@@ -10,6 +10,7 @@ use Cieplik206\IntegrationOperations\Enums\OperationDisposition;
 use Cieplik206\IntegrationOperations\Enums\OperationStatus;
 use Cieplik206\IntegrationOperations\Enums\ReconciliationResult;
 use Cieplik206\IntegrationOperations\Enums\ResultAvailability;
+use Cieplik206\IntegrationOperations\Registry\ManagedMutationIdentityContract;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinition;
 use Cieplik206\IntegrationOperations\Registry\TerminalContract;
 use Cieplik206\IntegrationOperations\Testing\Conformance\ConformanceReport;
@@ -71,6 +72,7 @@ function constructImmutableArrayHolder(string $holder, array $values): object
             $definition->operationType,
             $definition->versions,
             $definition->maximumRemoteWrites,
+            $definition->managedMutationIdentity,
             $definition->boundaryMode,
             $definition->retryMode,
             $values,
@@ -91,6 +93,7 @@ function constructImmutableArrayHolder(string $holder, array $values): object
             $definition->operationType,
             $definition->versions,
             $definition->maximumRemoteWrites,
+            $definition->managedMutationIdentity,
             $definition->boundaryMode,
             $definition->retryMode,
             $definition->safeRetryEvidence,
@@ -105,6 +108,11 @@ function constructImmutableArrayHolder(string $holder, array $values): object
             $definition->reconciliationStrategy,
             $definition->resultCodec,
             $definition->outcomeProjector,
+        ]),
+        'managed mutation semantic slots' => constructHostileImmutableArrayHolder(ManagedMutationIdentityContract::class, [
+            'fixture_resource',
+            'fixture_resource',
+            $values,
         ]),
         'conformance report' => constructHostileImmutableArrayHolder(ConformanceReport::class, [$values]),
         'conformance failure' => constructHostileImmutableArrayHolder(ProviderConformanceFailed::class, [$values]),
@@ -123,6 +131,7 @@ function immutableArrayHolderSample(string $holder): mixed
         'terminal effect states' => EffectState::Applied,
         'terminal result availabilities' => ResultAvailability::Available,
         'definition reconciliation results' => ReconciliationResult::FoundExact,
+        'managed mutation semantic slots' => 'default',
         'context constraints' => 'token',
         'definition retry evidence' => 'request_not_started',
         'conformance report', 'conformance failure' => 'fixture violation',
@@ -142,6 +151,7 @@ function immutableArrayHolderNames(): array
         'terminal result availabilities',
         'definition retry evidence',
         'definition reconciliation results',
+        'managed mutation semantic slots',
         'conformance report',
         'conformance failure',
     ];

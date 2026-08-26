@@ -1,6 +1,7 @@
 # Package and release surfaces
 /.github/ @cieplik206
 /composer.json @cieplik206
+/composer.lock @cieplik206
 /.gitignore @cieplik206
 /CHANGELOG.md @cieplik206
 /SECURITY.md @cieplik206
