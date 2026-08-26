@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.5 - 2026-08-27
+
+- Allow a canonical transport placeholder to carry a fixed safe segment
+  suffix, such as `/invoices/{invoice_id}.pdf`, while preserving exact
+  parameter matching, path-separator rejection, and encoded rendering.
+
 ## 0.3.4 - 2026-08-26
 
 - Add the authoritative `applied_in_progress` reconciliation outcome for a

@@ -208,7 +208,18 @@ it('accepts only canonical transport templates and renders exact scalar paramete
         ->and($target->render(['invoice_id' => '１', 'status_id' => '．']))
         ->toBe('/invoices/%EF%BC%91/status/%EF%BC%8E');
 
-    foreach (['/{', '/x{y}', '/{x}/../tail', '//evil.example', '/x?secret=1', '/x#fragment'] as $template) {
+    $suffixedTarget = new TransportTargetDefinition(
+        'invoice.pdf.read',
+        'https',
+        'GET',
+        '/invoices/{invoice_id}.pdf',
+    );
+
+    expect($suffixedTarget->placeholderNames)->toBe(['invoice_id'])
+        ->and($suffixedTarget->render(['invoice_id' => 'FV 1']))
+        ->toBe('/invoices/FV%201.pdf');
+
+    foreach (['/{', '/x{y}', '/{x}{y}', '/{x}/../tail', '//evil.example', '/x?secret=1', '/x#fragment'] as $template) {
         expect(fn () => new TransportTargetDefinition('invalid.target', 'https', 'GET', $template))
             ->toThrow(InvalidArgumentException::class);
     }

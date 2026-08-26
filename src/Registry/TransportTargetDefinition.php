@@ -45,11 +45,13 @@ final readonly class TransportTargetDefinition
                 continue;
             }
 
-            if (preg_match('/^\{([a-z][a-z0-9_]{0,63})\}$/D', $segment, $matches) !== 1) {
+            $placeholder = self::placeholderSegment($segment);
+
+            if ($placeholder === null) {
                 throw new InvalidArgumentException('Transport target placeholder is invalid.');
             }
 
-            $placeholderName = $matches[1];
+            $placeholderName = $placeholder['name'];
 
             if (in_array($placeholderName, $placeholderNames, true)) {
                 throw new InvalidArgumentException('Transport target placeholders must be unique.');
@@ -80,13 +82,15 @@ final readonly class TransportTargetDefinition
         $renderedSegments = [];
 
         foreach ($this->segments() as $segment) {
-            if (preg_match('/^\{([a-z][a-z0-9_]{0,63})\}$/D', $segment, $matches) !== 1) {
+            $placeholder = self::placeholderSegment($segment);
+
+            if ($placeholder === null) {
                 $renderedSegments[] = $segment;
 
                 continue;
             }
 
-            $value = $parameters[$matches[1]];
+            $value = $parameters[$placeholder['name']];
 
             if ($value === ''
                 || $value === '.'
@@ -98,7 +102,7 @@ final readonly class TransportTargetDefinition
                 throw new InvalidArgumentException('Transport target parameter is invalid.');
             }
 
-            $renderedSegments[] = rawurlencode($value);
+            $renderedSegments[] = rawurlencode($value).$placeholder['suffix'];
         }
 
         $rendered = '/'.implode('/', $renderedSegments);
@@ -108,6 +112,16 @@ final readonly class TransportTargetDefinition
         }
 
         return $rendered;
+    }
+
+    /** @return array{name: string, suffix: string}|null */
+    private static function placeholderSegment(string $segment): ?array
+    {
+        if (preg_match('/^\{([a-z][a-z0-9_]{0,63})\}([A-Za-z0-9_.-]*)$/D', $segment, $matches) !== 1) {
+            return null;
+        }
+
+        return ['name' => $matches[1], 'suffix' => $matches[2]];
     }
 
     /** @return list<string> */
