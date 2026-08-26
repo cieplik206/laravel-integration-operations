@@ -6,11 +6,13 @@ namespace Cieplik206\IntegrationOperations\Runtime;
 
 use Cieplik206\IntegrationOperations\Contracts\LeaseRecoveryIncidentNotifier;
 use Cieplik206\IntegrationOperations\Contracts\OperationLeaseManager;
+use Cieplik206\IntegrationOperations\Contracts\OperationTelemetry;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
 use Cieplik206\IntegrationOperations\Enums\EffectState;
 use Cieplik206\IntegrationOperations\Enums\LeasePurpose;
 use Cieplik206\IntegrationOperations\Enums\LeaseRecoveryDisposition;
 use Cieplik206\IntegrationOperations\Enums\OperationStatus;
+use Cieplik206\IntegrationOperations\Enums\OperationTelemetryEvent;
 use Cieplik206\IntegrationOperations\Exceptions\LeaseRecoveryIncidentNotificationFailed;
 use Cieplik206\IntegrationOperations\Exceptions\OperationConcurrencyViolation;
 use Cieplik206\IntegrationOperations\Exceptions\OperationPersistenceFailed;
@@ -18,9 +20,12 @@ use Cieplik206\IntegrationOperations\Exceptions\OperationQuarantineUnavailable;
 use Cieplik206\IntegrationOperations\Exceptions\RuntimeTransactionActive;
 use Cieplik206\IntegrationOperations\Exceptions\WriterFenceUnavailable;
 use Cieplik206\IntegrationOperations\Persistence\KernelDatabase;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeDefinitionRegistry;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeOperationDefinition;
 use Cieplik206\IntegrationOperations\Registry\ContainerBindingInspector;
 use Cieplik206\IntegrationOperations\Registry\DefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinition;
+use Cieplik206\IntegrationOperations\Telemetry\NullOperationTelemetry;
 use Cieplik206\IntegrationOperations\ValueObjects\IntegrationScope;
 use Cieplik206\IntegrationOperations\ValueObjects\LeaseClaim;
 use Cieplik206\IntegrationOperations\ValueObjects\LeaseRecoveryBatch;
@@ -29,6 +34,7 @@ use Cieplik206\IntegrationOperations\ValueObjects\LeaseRecoveryIncident;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationId;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationType;
 use Cieplik206\IntegrationOperations\ValueObjects\ProviderKey;
+use Cieplik206\IntegrationOperations\ValueObjects\SafeOperationTelemetryContext;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
@@ -51,6 +57,9 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
         private UlidFactory $ulids,
         private LeaseTimingPolicy $timing,
         private Repository $config,
+        private OperationTelemetry $telemetry = new NullOperationTelemetry,
+        private ?AuthoritativeDefinitionRegistry $authoritativeDefinitions = null,
+        private ?AuthoritativeOperationStateMachine $authoritativeStateMachine = null,
     ) {}
 
     public function claim(OperationId $operationId, string $owner): ?LeaseClaim
@@ -71,7 +80,7 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
 
             $connection = $this->database->connection();
 
-            return $connection->transaction(
+            $claim = $connection->transaction(
                 fn (): ?LeaseClaim => $this->claimTransaction(
                     $connection,
                     $identity,
@@ -83,6 +92,24 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                 ),
                 3,
             );
+
+            if ($claim !== null) {
+                $this->telemetry->record(
+                    OperationTelemetryEvent::Claimed,
+                    new SafeOperationTelemetryContext(
+                        $claim->scope->provider,
+                        $claim->operationId,
+                        status: match ($claim->purpose) {
+                            LeasePurpose::Execute => OperationStatus::Processing,
+                            LeasePurpose::Poll => OperationStatus::Polling,
+                            LeasePurpose::Reconcile => OperationStatus::Reconciling,
+                        },
+                        reasonCode: "lease_{$claim->purpose->value}",
+                    ),
+                );
+            }
+
+            return $claim;
         } catch (OperationConcurrencyViolation) {
             return null;
         } catch (Throwable $failure) {
@@ -115,9 +142,11 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                     return null;
                 }
 
-                $expectedStatus = $claim->purpose === LeasePurpose::Execute
-                    ? OperationStatus::Processing
-                    : OperationStatus::Reconciling;
+                $expectedStatus = match ($claim->purpose) {
+                    LeasePurpose::Execute => OperationStatus::Processing,
+                    LeasePurpose::Poll => OperationStatus::Polling,
+                    LeasePurpose::Reconcile => OperationStatus::Reconciling,
+                };
                 $operation = $connection->table('integration_operations')
                     ->where('id', $claim->operationId->value)
                     ->where('provider', $claim->scope->provider->value)
@@ -132,9 +161,15 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                 $definition = $operation instanceof stdClass
                     ? $this->supportedDefinition($operation, false)
                     : null;
+                $authoritativeDefinition = $operation instanceof stdClass
+                    && $claim->purpose === LeasePurpose::Poll
+                    ? $this->supportedAuthoritativeDefinition($operation, false)
+                    : null;
 
                 if (! $operation instanceof stdClass
                     || ! $definition instanceof OperationDefinition
+                    || ($claim->purpose === LeasePurpose::Poll
+                        && ! $authoritativeDefinition instanceof AuthoritativeOperationDefinition)
                     || ! is_string($operation->effect_state ?? null)
                     || ! is_int($operation->row_version ?? null)
                     || ! is_string($operation->active_attempt_id ?? null)
@@ -314,7 +349,11 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
             ->whereRaw("operation_type LIKE provider || '.%'")
             ->whereRaw("resource_type ~ '^[a-z][a-z0-9_.-]{0,127}$'")
             ->whereRaw("semantic_slot ~ '^[a-z][a-z0-9_.:-]{0,127}$'")
-            ->whereIn('status', [OperationStatus::Processing->value, OperationStatus::Reconciling->value])
+            ->whereIn('status', [
+                OperationStatus::Processing->value,
+                OperationStatus::Polling->value,
+                OperationStatus::Reconciling->value,
+            ])
             ->whereIn('effect_state', [
                 EffectState::NotStarted->value,
                 EffectState::PossiblyApplied->value,
@@ -634,7 +673,11 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
 
                 $operation = $connection->table('integration_operations')
                     ->where('id', $operationId->value)
-                    ->whereIn('status', [OperationStatus::Processing->value, OperationStatus::Reconciling->value])
+                    ->whereIn('status', [
+                        OperationStatus::Processing->value,
+                        OperationStatus::Polling->value,
+                        OperationStatus::Reconciling->value,
+                    ])
                     ->lockForUpdate()
                     ->first();
 
@@ -673,9 +716,12 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                     );
                 }
 
-                $purpose = $fromStatus === OperationStatus::Processing
-                    ? LeasePurpose::Execute
-                    : LeasePurpose::Reconcile;
+                $purpose = match ($fromStatus) {
+                    OperationStatus::Processing => LeasePurpose::Execute,
+                    OperationStatus::Polling => LeasePurpose::Poll,
+                    OperationStatus::Reconciling => LeasePurpose::Reconcile,
+                    default => throw new OperationConcurrencyViolation,
+                };
                 $pointedAttempt = $connection->table('integration_operation_attempts')
                     ->where('id', $operation->active_attempt_id)
                     ->where('operation_id', $operationId->value)
@@ -893,8 +939,13 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                 }
 
                 $definition = $this->supportedDefinition($operation, false);
+                $authoritativeDefinition = $purpose === LeasePurpose::Poll
+                    ? $this->supportedAuthoritativeDefinition($operation, false)
+                    : null;
 
-                if (! $definition instanceof OperationDefinition) {
+                if (! $definition instanceof OperationDefinition
+                    || ($purpose === LeasePurpose::Poll
+                        && ! $authoritativeDefinition instanceof AuthoritativeOperationDefinition)) {
                     return $this->appendDeferredObservation(
                         $connection,
                         $candidate,
@@ -948,6 +999,27 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                     );
                 }
 
+                if ($authoritativeDefinition instanceof AuthoritativeOperationDefinition
+                    && ! $this->authoritativeDefinitions?->runtimeBindingsAreAvailable(
+                        $authoritativeDefinition,
+                        $this->bindings,
+                    )) {
+                    return $this->appendDeferredObservation(
+                        $connection,
+                        $candidate,
+                        $operation,
+                        $fromStatus,
+                        $fromEffect,
+                        $decision,
+                        new LeaseRecoveryIncident(
+                            $operationId,
+                            $candidate->scope,
+                            'runtime_definition_unavailable',
+                            false,
+                        ),
+                    );
+                }
+
                 return $this->recoverValidatedExpiredLease(
                     $connection,
                     $operation,
@@ -956,6 +1028,7 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
                     $fromEffect,
                     $purpose,
                     $decision,
+                    $authoritativeDefinition,
                 );
             }, 3);
         } catch (OperationConcurrencyViolation) {
@@ -1028,7 +1101,11 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
 
             $operation = $connection->table('integration_operations')
                 ->where('id', $operationId->value)
-                ->whereIn('status', [OperationStatus::Processing->value, OperationStatus::Reconciling->value])
+                ->whereIn('status', [
+                    OperationStatus::Processing->value,
+                    OperationStatus::Polling->value,
+                    OperationStatus::Reconciling->value,
+                ])
                 ->lockForUpdate()
                 ->first();
 
@@ -1289,12 +1366,12 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
             throw new OperationQuarantineUnavailable;
         }
 
-        $transition = $this->stateMachine->transition(
+        $transition = $this->recoveryTransition(
+            $operation,
             $fromStatus,
             $fromEffect,
             OperationStatus::ManualReview,
             $fromEffect,
-            $operation->max_remote_writes,
         );
         $nextRowVersion = $operation->row_version + 1;
         if ($attempt->finished_at === null) {
@@ -1390,6 +1467,7 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
         EffectState $fromEffect,
         LeasePurpose $purpose,
         DatabaseLeaseDecision $decision,
+        ?AuthoritativeOperationDefinition $authoritativeDefinition,
     ): LeaseRecoveryEntryOutcome {
         if (! is_int($operation->row_version ?? null)
             || ! is_int($operation->max_remote_writes ?? null)
@@ -1403,15 +1481,26 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
         $beforeBoundary = $fromStatus === OperationStatus::Processing
             && $operation->request_started_at === null
             && $fromEffect === EffectState::NotStarted;
-        $toStatus = $beforeBoundary ? OperationStatus::Pending : OperationStatus::Uncertain;
+        $toStatus = $purpose === LeasePurpose::Poll
+            ? OperationStatus::PollWait
+            : ($beforeBoundary ? OperationStatus::Pending : OperationStatus::Uncertain);
         $toEffect = $beforeBoundary ? EffectState::NotStarted : $fromEffect;
-        $transition = $this->stateMachine->transition(
-            $fromStatus,
-            $fromEffect,
-            $toStatus,
-            $toEffect,
-            $operation->max_remote_writes,
-        );
+        $transition = $purpose === LeasePurpose::Poll
+            ? ($this->authoritativeStateMachine ?? new AuthoritativeOperationStateMachine)->transition(
+                $fromStatus,
+                $fromEffect,
+                $toStatus,
+                $toEffect,
+                $operation->max_remote_writes,
+                ($authoritativeDefinition ?? throw new OperationConcurrencyViolation)->successEffectPolicy,
+            )
+            : $this->stateMachine->transition(
+                $fromStatus,
+                $fromEffect,
+                $toStatus,
+                $toEffect,
+                $operation->max_remote_writes,
+            );
         $nextRowVersion = $operation->row_version + 1;
         $recoveryAttemptId = $this->ulids->generate();
         $attemptNumber = ((int) $connection->table('integration_operation_attempts')
@@ -1487,7 +1576,11 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
             $transition,
             $operation->row_version,
             $nextRowVersion,
-            $beforeBoundary ? 'expired_execution_lease_before_boundary' : 'expired_lease_after_boundary',
+            match (true) {
+                $purpose === LeasePurpose::Poll => 'expired_poll_lease',
+                $beforeBoundary => 'expired_execution_lease_before_boundary',
+                default => 'expired_lease_after_boundary',
+            },
             occurredAt: $decision->observedAt,
         );
 
@@ -1539,6 +1632,82 @@ final readonly class DatabaseOperationLeaseManager implements OperationLeaseMana
         }
 
         return $definition;
+    }
+
+    private function supportedAuthoritativeDefinition(
+        stdClass $operation,
+        bool $requireRuntimeBindings = true,
+    ): ?AuthoritativeOperationDefinition {
+        $definitions = $this->authoritativeDefinitions;
+
+        if (! $definitions instanceof AuthoritativeDefinitionRegistry
+            || ! $definitions->isFrozen()
+            || ! is_string($operation->provider ?? null)
+            || ! is_string($operation->operation_type ?? null)
+            || ! is_int($operation->handler_version ?? null)
+            || ! is_int($operation->payload_schema_version ?? null)
+            || ! is_int($operation->result_schema_version ?? null)
+            || ! is_int($operation->max_remote_writes ?? null)) {
+            return null;
+        }
+
+        try {
+            $definition = $definitions->find(
+                new ProviderKey($operation->provider),
+                new OperationType($operation->operation_type),
+                $operation->handler_version,
+            );
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+
+        if ($definition === null
+            || $definition->polling === null
+            || $definition->pollingStrategy === null
+            || $definition->versions->payloadSchema !== $operation->payload_schema_version
+            || $definition->versions->handler !== $operation->handler_version
+            || $definition->versions->resultSchema !== $operation->result_schema_version
+            || $definition->maximumRemoteWrites !== $operation->max_remote_writes
+            || ($requireRuntimeBindings
+                && ! $definitions->runtimeBindingsAreAvailable($definition, $this->bindings))) {
+            return null;
+        }
+
+        return $definition;
+    }
+
+    private function recoveryTransition(
+        stdClass $operation,
+        OperationStatus $fromStatus,
+        EffectState $fromEffect,
+        OperationStatus $toStatus,
+        EffectState $toEffect,
+    ): StateTransition {
+        if (! is_int($operation->max_remote_writes ?? null)) {
+            throw new OperationConcurrencyViolation;
+        }
+
+        if ($fromStatus !== OperationStatus::Polling) {
+            return $this->stateMachine->transition(
+                $fromStatus,
+                $fromEffect,
+                $toStatus,
+                $toEffect,
+                $operation->max_remote_writes,
+            );
+        }
+
+        $definition = $this->supportedAuthoritativeDefinition($operation, false)
+            ?? throw new OperationQuarantineUnavailable;
+
+        return ($this->authoritativeStateMachine ?? new AuthoritativeOperationStateMachine)->transition(
+            $fromStatus,
+            $fromEffect,
+            $toStatus,
+            $toEffect,
+            $operation->max_remote_writes,
+            $definition->successEffectPolicy,
+        );
     }
 
     private function lockWriterFenceAuthority(

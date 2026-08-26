@@ -10,6 +10,8 @@ enum OperationStatus: string
     case Pending = 'pending';
     case Processing = 'processing';
     case RetryWait = 'retry_wait';
+    case PollWait = 'poll_wait';
+    case Polling = 'polling';
     case Uncertain = 'uncertain';
     case Reconciling = 'reconciling';
     case ManualReview = 'manual_review';
@@ -23,6 +25,8 @@ enum OperationStatus: string
             self::Pending,
             self::Processing,
             self::RetryWait,
+            self::PollWait,
+            self::Polling,
             self::Uncertain,
             self::Reconciling => OperationDisposition::InProgress,
             self::ManualReview => OperationDisposition::RequiresManualReview,

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Cieplik206\IntegrationOperations\Context\IntegrationContextConstraints;
+use Cieplik206\IntegrationOperations\Contracts\AuthoritativeOperationQuery;
 use Cieplik206\IntegrationOperations\Contracts\Clock;
 use Cieplik206\IntegrationOperations\Contracts\LeaseRecoveryIncidentNotifier;
 use Cieplik206\IntegrationOperations\Contracts\LookupHmacKeyRing;
@@ -13,13 +14,19 @@ use Cieplik206\IntegrationOperations\Contracts\OperationQuery;
 use Cieplik206\IntegrationOperations\Contracts\PendingOperationDispatcher;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
 use Cieplik206\IntegrationOperations\IntegrationOperations;
+use Cieplik206\IntegrationOperations\Queries\DatabaseAuthoritativeOperationQuery;
 use Cieplik206\IntegrationOperations\Queries\DatabaseOperationQuery;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeDefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\DefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\RegistryFrozen;
 use Cieplik206\IntegrationOperations\Runtime\DatabaseOperationLeaseManager;
 use Cieplik206\IntegrationOperations\Runtime\DatabaseOperationProcessor;
 use Cieplik206\IntegrationOperations\Runtime\DatabasePendingOperationDispatcher;
 use Cieplik206\IntegrationOperations\Runtime\EventLeaseRecoveryIncidentNotifier;
+use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeAuthoritativeDefinitionProvider;
+use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeAuthoritativeLegacyProviderExtensions;
+use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeAuthoritativePollingExtensions;
+use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeAuthoritativeProviderExtensions;
 use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeProviderExtensions;
 use Cieplik206\IntegrationOperations\Testing\Conformance\Fakes\FakeSingleEffectDefinitionProvider;
 use Cieplik206\IntegrationOperations\Tests\Support\BootIoProbe;
@@ -38,12 +45,19 @@ it('boots against unreachable PostgreSQL and Redis without database, migration, 
         ->and(config('cache.default'))->toBe('redis')
         ->and(config('queue.default'))->toBe('redis')
         ->and(app(DefinitionRegistry::class)->isFrozen())->toBeTrue()
-        ->and(app(DefinitionRegistry::class)->all())->toHaveCount(1)
-        ->and(FakeProviderExtensions::$constructionAttempts)->toBe(0);
+        ->and(app(DefinitionRegistry::class)->all())->toHaveCount(4)
+        ->and(app(AuthoritativeDefinitionRegistry::class)->isFrozen())->toBeTrue()
+        ->and(app(AuthoritativeDefinitionRegistry::class)->all())->toHaveCount(3)
+        ->and(FakeProviderExtensions::$constructionAttempts)->toBe(0)
+        ->and(FakeAuthoritativeLegacyProviderExtensions::$constructionAttempts)->toBe(0)
+        ->and(FakeAuthoritativeProviderExtensions::$constructionAttempts)->toBe(0)
+        ->and(FakeAuthoritativePollingExtensions::$constructionAttempts)->toBe(0);
 });
 
 it('allows trusted provider registration during boot and rejects it afterwards', function (): void {
     expect(fn () => app(IntegrationOperations::class)->registerProvider(FakeSingleEffectDefinitionProvider::class))
+        ->toThrow(RegistryFrozen::class)
+        ->and(fn () => app(IntegrationOperations::class)->registerAuthoritativeProvider(FakeAuthoritativeDefinitionProvider::class))
         ->toThrow(RegistryFrozen::class);
 });
 
@@ -68,6 +82,7 @@ it('resolves the lease runtime and its incident notifier through the package pro
     ]);
 
     expect(app(LeaseRecoveryIncidentNotifier::class))->toBeInstanceOf(EventLeaseRecoveryIncidentNotifier::class)
+        ->and(app(AuthoritativeOperationQuery::class))->toBeInstanceOf(DatabaseAuthoritativeOperationQuery::class)
         ->and(app(OperationLeaseManager::class))->toBeInstanceOf(DatabaseOperationLeaseManager::class)
         ->and(app(OperationProcessor::class))->toBeInstanceOf(DatabaseOperationProcessor::class)
         ->and(app(OperationQuery::class))->toBeInstanceOf(DatabaseOperationQuery::class)

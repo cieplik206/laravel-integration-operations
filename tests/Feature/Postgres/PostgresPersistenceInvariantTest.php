@@ -298,6 +298,17 @@ it('enforces the PostgreSQL lifecycle, immutability, alias, audit, and schedulin
         expect($constraint->condeferrable ?? null)->toBeFalse();
     }
 
+    $authoritativeRuntimeRollbackExitCode = app(ConsoleKernel::class)->call('migrate:rollback', [
+        '--database' => 'integration_operations_test',
+        '--force' => true,
+        '--step' => 1,
+    ]);
+
+    expect($authoritativeRuntimeRollbackExitCode)->toBe(0)
+        ->and($connection->getSchemaBuilder()->hasTable('integration_operation_authoritative_states'))->toBeFalse()
+        ->and($connection->getSchemaBuilder()->hasTable('integration_operation_writer_fences'))->toBeTrue()
+        ->and($connection->getSchemaBuilder()->hasTable('integration_operation_attempts'))->toBeTrue();
+
     $authorityRollbackExitCode = app(ConsoleKernel::class)->call('migrate:rollback', [
         '--database' => 'integration_operations_test',
         '--force' => true,

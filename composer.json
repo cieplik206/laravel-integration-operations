@@ -41,6 +41,7 @@
         "illuminate/queue": "^13.0",
         "illuminate/redis": "^13.0",
         "illuminate/support": "^13.0",
+        "psr/log": "^3.0",
         "symfony/uid": "^7.4|^8.0"
     },
     "require-dev": {
@@ -64,7 +65,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "0.2.x-dev"
+            "dev-main": "0.3.x-dev"
         },
         "laravel": {
             "providers": [

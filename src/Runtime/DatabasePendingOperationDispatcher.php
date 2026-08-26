@@ -70,35 +70,61 @@ final readonly class DatabasePendingOperationDispatcher implements PendingOperat
     {
         $connection = $this->database->connection();
         $redispatchAfterSeconds = $this->redispatchAfterSeconds();
-        $rows = $connection->table('integration_operations')
-            ->select(['id', 'operation_type', 'status', 'row_version'])
-            ->where('provider', $scope->provider->value)
-            ->where('connection_key', $scope->connection->value)
+        $rows = $connection->table('integration_operations as operation')
+            ->leftJoin(
+                'integration_operation_authoritative_states as authoritative',
+                'authoritative.operation_id',
+                '=',
+                'operation.id',
+            )
+            ->select([
+                'operation.id',
+                'operation.operation_type',
+                'operation.status',
+                'operation.row_version',
+            ])
+            ->where('operation.provider', $scope->provider->value)
+            ->where('operation.connection_key', $scope->connection->value)
             ->where(function ($query) use ($connection): void {
-                $query->where('status', OperationStatus::Pending->value)
+                $query->where('operation.status', OperationStatus::Pending->value)
                     ->orWhere(function ($due) use ($connection): void {
-                        $due->whereIn('status', [
+                        $due->whereIn('operation.status', [
                             OperationStatus::RetryWait->value,
                             OperationStatus::Uncertain->value,
                         ])->where(function ($deadline) use ($connection): void {
-                            $deadline->whereNull('next_attempt_at')
-                                ->orWhere('next_attempt_at', '<=', $connection->raw('clock_timestamp()'));
+                            $deadline->whereNull('operation.next_attempt_at')
+                                ->orWhere(
+                                    'operation.next_attempt_at',
+                                    '<=',
+                                    $connection->raw('clock_timestamp()'),
+                                );
                         });
+                    })
+                    ->orWhere(function ($poll) use ($connection): void {
+                        $poll->where('operation.status', OperationStatus::PollWait->value)
+                            ->whereNotNull('authoritative.next_poll_at')
+                            ->where(
+                                'authoritative.next_poll_at',
+                                '<=',
+                                $connection->raw('clock_timestamp()'),
+                            )
+                            ->where('authoritative.result_availability', 'not_ready')
+                            ->whereNull('authoritative.terminal_proof_kind');
                     });
             })
             ->where(function ($query) use ($redispatchAfterSeconds): void {
-                $query->whereNull('last_dispatched_at')
+                $query->whereNull('operation.last_dispatched_at')
                     ->orWhereRaw(
-                        "last_dispatched_at <= clock_timestamp() - (? * INTERVAL '1 second')",
+                        "operation.last_dispatched_at <= clock_timestamp() - (? * INTERVAL '1 second')",
                         [$redispatchAfterSeconds],
                     );
             })
-            ->whereNull('lease_owner')
-            ->whereNull('lease_token_sha256')
-            ->whereNull('active_attempt_id')
-            ->orderByDesc('priority')
-            ->orderBy('accepted_at')
-            ->orderBy('id')
+            ->whereNull('operation.lease_owner')
+            ->whereNull('operation.lease_token_sha256')
+            ->whereNull('operation.active_attempt_id')
+            ->orderByDesc('operation.priority')
+            ->orderBy('operation.accepted_at')
+            ->orderBy('operation.id')
             ->limit($limit)
             ->get();
 

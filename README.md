@@ -3,19 +3,24 @@
 Provider-neutral Laravel foundation for durable integration operations and
 versioned provider SDKs.
 
-Version 0.1 provides the RT-1 boundary:
+Version 0.3 provides the durable RT-1/RT-2 boundary:
 
 - immutable, versioned receipts, snapshots, scopes, contexts, failures, and
   encoded results;
 - canonical JSON, SHA-256 content hashes, domain-separated HMAC lookup digests,
   a versioned secret key ring, a UTC clock, and canonical ULIDs;
-- framework-neutral handler, retry, failure-classification, reconciliation,
-  projection, and result-codec contracts;
+- framework-neutral handler, retry, failure-classification, polling,
+  reconciliation, projection, compensation, and result-codec contracts;
 - a trusted boot-only operation definition registry that freezes after Laravel
   boots without constructing provider services or performing database, cache,
   credential, or HTTP I/O;
-- a public provider conformance kit, strict Provider SPI 0.1 schema, and
-  read-only and single-effect reference definitions.
+- an authoritative boot-frozen Provider SPI v2 registry, poll-first and
+  immediate-execute operation lanes, terminal proof contracts, and a public
+  provider conformance kit;
+- PostgreSQL persistence for encrypted payloads and results, idempotent intent
+  acceptance, single-effect boundaries, leases, recovery, scoped queries,
+  dispatch cursors, relations, and compensation acceptance;
+- Redis-backed scope limiters and redacted PSR-3 lifecycle telemetry.
 
 ## Contracts
 
@@ -34,10 +39,10 @@ rows, queue payloads, requests, or other persisted data.
 
 ## Scope boundary
 
-Version 0.1 intentionally does not ship the RT-2 runtime: there is no operation
-persistence, migration, state-machine executor, queue worker, lease manager,
-retry scheduler, or runtime reconciliation orchestration yet. The schema
-specification describes that future boundary but does not activate it.
+The kernel owns provider-neutral technical lifecycle only. It persists and
+executes registered operations, but provider SDKs still own transport details,
+failure semantics, reconciliation algorithms, codecs, and projection plans.
+Consuming applications own cross-provider business workflows.
 
 The kernel does not depend on Fakturownia, Allegro, Saloon, or application
 domain models. Provider semantics belong to provider SDKs, while cross-provider
@@ -52,7 +57,7 @@ business workflows remain in the consuming application.
 
 ## Installation
 
-    composer require cieplik206/laravel-integration-operations:^0.1
+    composer require cieplik206/laravel-integration-operations:^0.3
 
 Laravel discovers the package service provider automatically. Provider SDKs
 must register their operation definitions and exact final singleton extension

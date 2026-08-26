@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-08-26
+
+- Add the authoritative Provider SPI v2 registry with typed activation,
+  transport, polling, reconciliation, projection, result-envelope,
+  compensation, and terminal-proof contracts.
+- Add poll-first operation lanes, durable poll state and leases, bounded
+  dispatch cursors, relation persistence, compensation acceptance, and scoped
+  authoritative queries.
+- Execute authoritative failure classification and reconciliation policies,
+  including terminal provider rejection as `failed + applied + available`
+  without blind write retries.
+- Add append-only authoritative runtime persistence, safe rollback guards,
+  result-availability and terminal-proof evidence, and redacted lifecycle
+  telemetry through PSR-3.
+- Harden the release workflow by requiring signed commits and annotated signed
+  tags from the committed release signer allowlist.
+
 ## 0.2.0 - 2026-08-26
 
 - Add the durable PostgreSQL operation runtime with encrypted payloads,

@@ -5,27 +5,40 @@ declare(strict_types=1);
 namespace Cieplik206\IntegrationOperations\Runtime;
 
 use Cieplik206\IntegrationOperations\Contracts\ExecutionOutcome;
+use Cieplik206\IntegrationOperations\Contracts\OperationTelemetry;
 use Cieplik206\IntegrationOperations\Contracts\OutcomeProjector;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
 use Cieplik206\IntegrationOperations\Crypto\BoundPayloadEnvelopeCodec;
 use Cieplik206\IntegrationOperations\Crypto\CanonicalObject;
+use Cieplik206\IntegrationOperations\Enums\AuthoritativeReconciliationResult;
 use Cieplik206\IntegrationOperations\Enums\EffectState;
 use Cieplik206\IntegrationOperations\Enums\FailureDisposition;
 use Cieplik206\IntegrationOperations\Enums\LeasePurpose;
 use Cieplik206\IntegrationOperations\Enums\OperationStatus;
+use Cieplik206\IntegrationOperations\Enums\OperationTelemetryEvent;
 use Cieplik206\IntegrationOperations\Enums\ReconciliationResult;
+use Cieplik206\IntegrationOperations\Enums\ReconciliationTrigger;
+use Cieplik206\IntegrationOperations\Enums\ResultAvailability;
 use Cieplik206\IntegrationOperations\Enums\RetryDecision;
+use Cieplik206\IntegrationOperations\Enums\TerminalProofKind;
 use Cieplik206\IntegrationOperations\Events\OperationTerminalized;
 use Cieplik206\IntegrationOperations\Exceptions\OperationConcurrencyViolation;
 use Cieplik206\IntegrationOperations\Exceptions\OperationPersistenceFailed;
 use Cieplik206\IntegrationOperations\Persistence\KernelDatabase;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeDefinitionRegistry;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeOperationDefinition;
+use Cieplik206\IntegrationOperations\Registry\TerminalOutcomePair;
+use Cieplik206\IntegrationOperations\Telemetry\NullOperationTelemetry;
+use Cieplik206\IntegrationOperations\ValueObjects\AuthoritativeReconciliationOutcome;
 use Cieplik206\IntegrationOperations\ValueObjects\EncodedResult;
 use Cieplik206\IntegrationOperations\ValueObjects\EncryptedEnvelope;
 use Cieplik206\IntegrationOperations\ValueObjects\FailureClassification;
 use Cieplik206\IntegrationOperations\ValueObjects\PayloadEnvelopeBinding;
+use Cieplik206\IntegrationOperations\ValueObjects\ProjectionPlan;
 use Cieplik206\IntegrationOperations\ValueObjects\ReconciliationOutcome;
 use Cieplik206\IntegrationOperations\ValueObjects\RetryInstruction;
 use Cieplik206\IntegrationOperations\ValueObjects\SafeOperationFailure;
+use Cieplik206\IntegrationOperations\ValueObjects\SafeOperationTelemetryContext;
 use Closure;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Events\Dispatcher;
@@ -44,6 +57,9 @@ final readonly class DatabaseOperationFinalizer
         private UlidFactory $ulids,
         private Dispatcher $events,
         private Repository $config,
+        private OperationTelemetry $telemetry = new NullOperationTelemetry,
+        private ?AuthoritativeDefinitionRegistry $authoritativeDefinitions = null,
+        private AuthoritativeOperationStateMachine $authoritativeStateMachine = new AuthoritativeOperationStateMachine,
     ) {}
 
     public function succeed(
@@ -96,6 +112,15 @@ final readonly class DatabaseOperationFinalizer
             }
 
             $this->insertResult($connection, $loaded, $encodedResult, $envelope, $observedAt);
+            $this->persistAuthoritativeTerminalEvidence(
+                $connection,
+                $loaded,
+                OperationStatus::Succeeded,
+                $targetEffect,
+                ResultAvailability::Available,
+                TerminalProofKind::Execute,
+                $observedAt,
+            );
             $this->finishAttempt(
                 $connection,
                 $loaded,
@@ -121,8 +146,14 @@ final readonly class DatabaseOperationFinalizer
         LoadedOperation $loaded,
         FailureClassification $classification,
         RetryInstruction $instruction,
+        ReconciliationTrigger $reconciliationTrigger = ReconciliationTrigger::Unknown,
     ): void {
-        $this->transaction(function (Connection $connection) use ($loaded, $classification, $instruction): void {
+        $this->transaction(function (Connection $connection) use (
+            $loaded,
+            $classification,
+            $instruction,
+            $reconciliationTrigger,
+        ): void {
             [$operation, $attempt, $fromStatus, $fromEffect, $observedAt] = $this->lockClaimedLifecycle($connection, $loaded);
             [$toStatus, $toEffect, $reasonCode] = $this->classifiedTarget(
                 $classification,
@@ -138,6 +169,18 @@ final readonly class DatabaseOperationFinalizer
                 $loaded->definition->maximumRemoteWrites,
             );
 
+            if ($toStatus === OperationStatus::Failed) {
+                $this->persistAuthoritativeTerminalEvidence(
+                    $connection,
+                    $loaded,
+                    $toStatus,
+                    $toEffect,
+                    ResultAvailability::NotApplicable,
+                    TerminalProofKind::PreEffect,
+                    $observedAt,
+                );
+            }
+
             $this->finishAttempt(
                 $connection,
                 $loaded,
@@ -146,6 +189,7 @@ final readonly class DatabaseOperationFinalizer
                 $toEffect,
                 $observedAt,
                 $classification->safeFailure,
+                reconciliationTrigger: $reconciliationTrigger,
             );
             $this->updateOperation(
                 $connection,
@@ -220,6 +264,156 @@ final readonly class DatabaseOperationFinalizer
                     new CanonicalObject($encodedResult->toArray()),
                 );
                 $this->insertResult($connection, $loaded, $encodedResult, $envelope, $observedAt);
+            }
+
+            if ($toStatus->disposition()->isTerminal()) {
+                $availability = $encodedResult instanceof EncodedResult
+                    ? ResultAvailability::Available
+                    : ResultAvailability::NotApplicable;
+                $this->persistAuthoritativeTerminalEvidence(
+                    $connection,
+                    $loaded,
+                    $toStatus,
+                    $toEffect,
+                    $availability,
+                    TerminalProofKind::Reconcile,
+                    $observedAt,
+                );
+            }
+
+            $this->finishAttempt(
+                $connection,
+                $loaded,
+                $attempt,
+                $reconciliation->result->value,
+                $toEffect,
+                $observedAt,
+                $safeFailure,
+                $reconciliation->evidenceCode,
+            );
+            $this->updateOperation(
+                $connection,
+                $loaded,
+                $operation,
+                $transition,
+                $toEffect,
+                $observedAt,
+                $safeFailure,
+                $this->nextAttemptAt($connection, $toStatus, $observedAt),
+                'reconciliation_'.$reconciliation->result->value,
+            );
+        });
+    }
+
+    public function reconcileAuthoritative(
+        LoadedOperation $loaded,
+        AuthoritativeOperationDefinition $definition,
+        AuthoritativeReconciliationOutcome $reconciliation,
+        ?ExecutionOutcome $outcome,
+        ?EncodedResult $encodedResult,
+        ?OutcomeProjector $projector,
+        ?ProjectionPlan $projection,
+    ): void {
+        $this->transaction(function (Connection $connection) use (
+            $loaded,
+            $definition,
+            $reconciliation,
+            $outcome,
+            $encodedResult,
+            $projector,
+            $projection,
+        ): void {
+            [$operation, $attempt, $fromStatus, $fromEffect, $observedAt] = $this->lockClaimedLifecycle($connection, $loaded);
+
+            if ($fromEffect !== EffectState::PossiblyApplied
+                || ! in_array($reconciliation->result, $definition->reconciliationResults, true)) {
+                throw new OperationConcurrencyViolation;
+            }
+
+            [$toStatus, $toEffect, $availability, $safeFailure] = match ($reconciliation->result) {
+                AuthoritativeReconciliationResult::FoundExact => [
+                    OperationStatus::Succeeded,
+                    EffectState::Applied,
+                    ResultAvailability::Available,
+                    null,
+                ],
+                AuthoritativeReconciliationResult::AbsentConclusive => [
+                    OperationStatus::Failed,
+                    EffectState::NotApplied,
+                    ResultAvailability::NotApplicable,
+                    $reconciliation->safeFailure,
+                ],
+                AuthoritativeReconciliationResult::Inconclusive => [
+                    OperationStatus::Uncertain,
+                    EffectState::PossiblyApplied,
+                    ResultAvailability::NotReady,
+                    null,
+                ],
+                AuthoritativeReconciliationResult::AmbiguousMatches => [
+                    OperationStatus::ManualReview,
+                    EffectState::PossiblyApplied,
+                    ResultAvailability::NotReady,
+                    $reconciliation->safeFailure,
+                ],
+                AuthoritativeReconciliationResult::ProviderRejected => [
+                    OperationStatus::Failed,
+                    EffectState::Applied,
+                    ResultAvailability::Available,
+                    $reconciliation->safeFailure,
+                ],
+            };
+            $transition = $this->authoritativeStateMachine->transition(
+                $fromStatus,
+                $fromEffect,
+                $toStatus,
+                $toEffect,
+                $definition->maximumRemoteWrites,
+                $definition->successEffectPolicy,
+            );
+
+            if ($availability === ResultAvailability::Available) {
+                if (! $outcome instanceof ExecutionOutcome
+                    || ! $encodedResult instanceof EncodedResult
+                    || ! $projector instanceof OutcomeProjector
+                    || ! $projection instanceof ProjectionPlan
+                    || ! $projection->isCompatibleWith($definition->projection)) {
+                    throw new OperationConcurrencyViolation;
+                }
+
+                $transactionLevel = $connection->transactionLevel();
+                $projector->project($loaded->view, $outcome);
+
+                if ($connection->transactionLevel() !== $transactionLevel) {
+                    throw new OperationConcurrencyViolation;
+                }
+
+                $envelope = $this->envelopes->encrypt(
+                    new PayloadEnvelopeBinding(
+                        'result',
+                        $loaded->lease->claim()->operationId,
+                        1,
+                        $encodedResult->schemaVersion,
+                    ),
+                    new CanonicalObject($encodedResult->toArray()),
+                );
+                $this->insertResult($connection, $loaded, $encodedResult, $envelope, $observedAt);
+            } elseif ($outcome !== null
+                || $encodedResult !== null
+                || $projector !== null
+                || $projection !== null) {
+                throw new OperationConcurrencyViolation;
+            }
+
+            if ($toStatus->disposition()->isTerminal()) {
+                $this->persistAuthoritativeTerminalEvidence(
+                    $connection,
+                    $loaded,
+                    $toStatus,
+                    $toEffect,
+                    $availability,
+                    TerminalProofKind::Reconcile,
+                    $observedAt,
+                );
             }
 
             $this->finishAttempt(
@@ -485,6 +679,7 @@ final readonly class DatabaseOperationFinalizer
         string $observedAt,
         ?SafeOperationFailure $failure = null,
         ?string $evidenceCode = null,
+        ReconciliationTrigger $reconciliationTrigger = ReconciliationTrigger::Unknown,
     ): void {
         if (! is_string($attempt->id ?? null)) {
             throw new OperationConcurrencyViolation;
@@ -501,15 +696,30 @@ final readonly class DatabaseOperationFinalizer
                 'response_received_at' => is_string($attempt->request_started_at ?? null) ? $observedAt : null,
                 'error_category' => $failure === null ? null : 'provider',
                 'error_code' => $failure?->code,
-                'safe_metadata' => $evidenceCode === null
-                    ? null
-                    : json_encode(['evidence_code' => $evidenceCode], JSON_THROW_ON_ERROR),
+                'safe_metadata' => $this->safeAttemptMetadata($evidenceCode, $reconciliationTrigger),
                 'finished_at' => $observedAt,
             ]);
 
         if ($updated !== 1) {
             throw new OperationConcurrencyViolation;
         }
+    }
+
+    private function safeAttemptMetadata(
+        ?string $evidenceCode,
+        ReconciliationTrigger $reconciliationTrigger,
+    ): ?string {
+        $metadata = [];
+
+        if ($evidenceCode !== null) {
+            $metadata['evidence_code'] = $evidenceCode;
+        }
+
+        if ($reconciliationTrigger !== ReconciliationTrigger::Unknown) {
+            $metadata['reconciliation_trigger'] = $reconciliationTrigger->value;
+        }
+
+        return $metadata === [] ? null : json_encode($metadata, JSON_THROW_ON_ERROR);
     }
 
     private function updateOperation(
@@ -583,7 +793,100 @@ final readonly class DatabaseOperationFinalizer
             $connection->afterCommit(fn (): mixed => $this->events->dispatch($event));
         }
 
+        $telemetryEvents = [];
+
+        if ($claim->purpose === LeasePurpose::Reconcile) {
+            $telemetryEvents[] = OperationTelemetryEvent::Reconciled;
+        }
+
+        if ($targetStatus === OperationStatus::ManualReview) {
+            $telemetryEvents[] = OperationTelemetryEvent::ManualReview;
+        }
+
+        if ($targetStatus === OperationStatus::Succeeded) {
+            $telemetryEvents[] = OperationTelemetryEvent::Projected;
+        }
+
+        if ($targetStatus->disposition()->isTerminal()) {
+            $telemetryEvents[] = OperationTelemetryEvent::Terminalized;
+        }
+
+        foreach ($telemetryEvents as $telemetryEvent) {
+            $context = new SafeOperationTelemetryContext(
+                $claim->scope->provider,
+                $claim->operationId,
+                $loaded->view->operationType(),
+                $targetStatus,
+                $targetStatus->disposition(),
+                $targetEffect,
+                $reasonCode ?? 'operation_finalized',
+                $loaded->observationNumber,
+            );
+            $connection->afterCommit(function () use ($telemetryEvent, $context): void {
+                $this->telemetry->record($telemetryEvent, $context);
+            });
+        }
+
         $loaded->lease->advanceTo($nextRowVersion);
+    }
+
+    private function persistAuthoritativeTerminalEvidence(
+        Connection $connection,
+        LoadedOperation $loaded,
+        OperationStatus $status,
+        EffectState $effectState,
+        ResultAvailability $resultAvailability,
+        TerminalProofKind $proofKind,
+        string $observedAt,
+    ): void {
+        $operationId = $loaded->lease->claim()->operationId;
+        $stateExists = $connection->table('integration_operation_authoritative_states')
+            ->where('operation_id', $operationId->value)
+            ->exists();
+
+        if (! $stateExists) {
+            return;
+        }
+
+        $definitions = $this->authoritativeDefinitions;
+
+        if ($definitions === null || ! $definitions->isFrozen()) {
+            throw new OperationConcurrencyViolation;
+        }
+
+        $definition = $definitions->find(
+            $loaded->lease->claim()->scope->provider,
+            $loaded->view->operationType(),
+            $loaded->definition->versions->handler,
+        );
+        $candidate = new TerminalOutcomePair(
+            $status,
+            $effectState,
+            $resultAvailability,
+            [$proofKind],
+        );
+
+        if ($definition === null
+            || $definition->versions->payloadSchema !== $loaded->definition->versions->payloadSchema
+            || $definition->versions->resultSchema !== $loaded->definition->versions->resultSchema
+            || $definition->maximumRemoteWrites !== $loaded->definition->maximumRemoteWrites
+            || ! $definition->terminalOutcomes->allows($candidate, $proofKind)) {
+            throw new OperationConcurrencyViolation;
+        }
+
+        $updated = $connection->table('integration_operation_authoritative_states')
+            ->where('operation_id', $operationId->value)
+            ->where('result_availability', ResultAvailability::NotReady->value)
+            ->whereNull('terminal_proof_kind')
+            ->update([
+                'result_availability' => $resultAvailability->value,
+                'terminal_proof_kind' => $proofKind->value,
+                'updated_at' => $observedAt,
+            ]);
+
+        if ($updated !== 1) {
+            throw new OperationConcurrencyViolation;
+        }
     }
 
     private function terminalEventsEnabled(): bool

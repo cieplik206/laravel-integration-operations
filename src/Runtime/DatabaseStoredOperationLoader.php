@@ -48,7 +48,7 @@ final readonly class DatabaseStoredOperationLoader
             $context = $this->context($row, $claim);
             $observationNumber = $claim->purpose === LeasePurpose::Reconcile
                 ? $row->reconcile_attempts
-                : 1;
+                : ($claim->purpose === LeasePurpose::Poll ? $row->poll_attempts : 1);
 
             if (! is_int($observationNumber) || $observationNumber < 1) {
                 throw new OperationPersistenceFailed;
@@ -75,9 +75,11 @@ final readonly class DatabaseStoredOperationLoader
 
     private function row(LeaseClaim $claim): ?stdClass
     {
-        $expectedStatus = $claim->purpose === LeasePurpose::Execute
-            ? OperationStatus::Processing
-            : OperationStatus::Reconciling;
+        $expectedStatus = match ($claim->purpose) {
+            LeasePurpose::Execute => OperationStatus::Processing,
+            LeasePurpose::Poll => OperationStatus::Polling,
+            LeasePurpose::Reconcile => OperationStatus::Reconciling,
+        };
 
         $row = $this->database->connection()
             ->table('integration_operations as operation')
@@ -85,6 +87,12 @@ final readonly class DatabaseStoredOperationLoader
                 $join->on('payload.operation_id', '=', 'operation.id')
                     ->on('payload.payload_revision', '=', 'operation.current_payload_revision');
             })
+            ->leftJoin(
+                'integration_operation_authoritative_states as authoritative',
+                'authoritative.operation_id',
+                '=',
+                'operation.id',
+            )
             ->select([
                 'operation.id',
                 'operation.provider',
@@ -96,6 +104,7 @@ final readonly class DatabaseStoredOperationLoader
                 'operation.max_remote_writes',
                 'operation.row_version',
                 'operation.reconcile_attempts',
+                'authoritative.poll_attempts',
                 'operation.active_attempt_id',
                 'operation.lease_owner',
                 'operation.lease_token_sha256',

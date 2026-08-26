@@ -8,5 +8,6 @@ namespace Cieplik206\IntegrationOperations\Enums;
 enum BoundaryMode: string
 {
     case Forbidden = 'forbidden';
+    case Optional = 'optional';
     case Required = 'required';
 }

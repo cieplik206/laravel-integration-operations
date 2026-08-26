@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cieplik206\IntegrationOperations\Runtime;
 
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeOperationDefinition;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinition;
 use Cieplik206\IntegrationOperations\ValueObjects\AcceptOperation;
 use Cieplik206\IntegrationOperations\ValueObjects\EncryptedEnvelope;
@@ -25,6 +26,8 @@ final readonly class PreparedAcceptance
     public function __construct(
         public AcceptOperation $command,
         public OperationDefinition $definition,
+        public ?AuthoritativeOperationDefinition $authoritativeDefinition,
+        public ?string $writeActivationSlot,
         public WriterFence $writerFence,
         public OperationId $candidateIntentId,
         public OperationId $candidateOperationId,

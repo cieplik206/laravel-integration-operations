@@ -94,7 +94,9 @@ final class OperationStateMachine
             ], true),
             OperationStatus::Succeeded,
             OperationStatus::Failed,
-            OperationStatus::Cancelled => false,
+            OperationStatus::Cancelled,
+            OperationStatus::PollWait,
+            OperationStatus::Polling => false,
         };
     }
 

@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Cieplik206\IntegrationOperations\Runtime;
 
 use Cieplik206\IntegrationOperations\Context\IntegrationContext;
+use Cieplik206\IntegrationOperations\Contracts\CompensationOperationCoordinator;
 use Cieplik206\IntegrationOperations\Contracts\DurableAcceptanceNotifier;
 use Cieplik206\IntegrationOperations\Contracts\LocalReferenceTypeRegistry;
 use Cieplik206\IntegrationOperations\Contracts\LookupHmacKeyRing;
 use Cieplik206\IntegrationOperations\Contracts\OperationCoordinator;
+use Cieplik206\IntegrationOperations\Contracts\OperationPayloadCodec;
+use Cieplik206\IntegrationOperations\Contracts\OperationTelemetry;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
 use Cieplik206\IntegrationOperations\Contracts\WriterFenceResolver;
 use Cieplik206\IntegrationOperations\Crypto\BoundPayloadEnvelopeCodec;
@@ -16,9 +19,14 @@ use Cieplik206\IntegrationOperations\Crypto\CanonicalJsonV1;
 use Cieplik206\IntegrationOperations\Crypto\CanonicalObject;
 use Cieplik206\IntegrationOperations\Crypto\HmacSha256;
 use Cieplik206\IntegrationOperations\Enums\EffectState;
+use Cieplik206\IntegrationOperations\Enums\InitialOperationLane;
 use Cieplik206\IntegrationOperations\Enums\LookupHmacDomain;
+use Cieplik206\IntegrationOperations\Enums\OperationRelationPurpose;
 use Cieplik206\IntegrationOperations\Enums\OperationStatus;
+use Cieplik206\IntegrationOperations\Enums\OperationTelemetryEvent;
 use Cieplik206\IntegrationOperations\Enums\OwnerMode;
+use Cieplik206\IntegrationOperations\Enums\PollPurpose;
+use Cieplik206\IntegrationOperations\Enums\ResultAvailability;
 use Cieplik206\IntegrationOperations\Exceptions\DurableAcceptanceNotificationFailed;
 use Cieplik206\IntegrationOperations\Exceptions\LocalReferenceRequired;
 use Cieplik206\IntegrationOperations\Exceptions\LocalReferenceTypeNotAllowed;
@@ -29,19 +37,28 @@ use Cieplik206\IntegrationOperations\Exceptions\UnsupportedOperationDefinition;
 use Cieplik206\IntegrationOperations\Exceptions\WriterFenceRejected;
 use Cieplik206\IntegrationOperations\Exceptions\WriterFenceUnavailable;
 use Cieplik206\IntegrationOperations\Persistence\KernelDatabase;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeDefinitionRegistry;
+use Cieplik206\IntegrationOperations\Registry\AuthoritativeOperationDefinition;
+use Cieplik206\IntegrationOperations\Registry\CompensationContract;
 use Cieplik206\IntegrationOperations\Registry\DefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinition;
+use Cieplik206\IntegrationOperations\Telemetry\NullOperationTelemetry;
+use Cieplik206\IntegrationOperations\ValueObjects\AcceptCompensationOperation;
 use Cieplik206\IntegrationOperations\ValueObjects\AcceptOperation;
 use Cieplik206\IntegrationOperations\ValueObjects\EncryptedEnvelope;
 use Cieplik206\IntegrationOperations\ValueObjects\LocalReference;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationActor;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationId;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationReceipt;
+use Cieplik206\IntegrationOperations\ValueObjects\OperationType;
 use Cieplik206\IntegrationOperations\ValueObjects\PayloadEnvelopeBinding;
+use Cieplik206\IntegrationOperations\ValueObjects\ProviderKey;
+use Cieplik206\IntegrationOperations\ValueObjects\SafeOperationTelemetryContext;
 use Cieplik206\IntegrationOperations\ValueObjects\SupersedeFailedOperation;
 use Cieplik206\IntegrationOperations\ValueObjects\VersionedHmacDigest;
 use Cieplik206\IntegrationOperations\ValueObjects\WriterFence;
 use Closure;
+use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
@@ -52,7 +69,7 @@ use stdClass;
 use Throwable;
 
 /** @internal */
-final readonly class DatabaseOperationCoordinator implements OperationCoordinator
+final readonly class DatabaseOperationCoordinator implements CompensationOperationCoordinator, OperationCoordinator
 {
     private const int MaximumUniqueRaceRetries = 3;
 
@@ -70,6 +87,10 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         private OperationStateMachine $stateMachine,
         private DurableAcceptanceNotifier $notifier,
         private Repository $config,
+        private OperationTelemetry $telemetry = new NullOperationTelemetry,
+        private ?AuthoritativeDefinitionRegistry $authoritativeDefinitions = null,
+        private ?Container $container = null,
+        private AuthoritativeOperationStateMachine $authoritativeStateMachine = new AuthoritativeOperationStateMachine,
     ) {}
 
     public function accept(AcceptOperation $command): OperationReceipt
@@ -107,6 +128,25 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         );
     }
 
+    public function acceptCompensation(AcceptCompensationOperation $command): OperationReceipt
+    {
+        $this->database->assertNoForeignTransaction();
+        $this->database->connection();
+        $transactionBaseline = $this->database->transactionLevels();
+        $prepared = $this->prepareWithTransactionHygiene($command->compensation, $transactionBaseline);
+        $this->database->assertNoForeignTransaction();
+        $connection = $this->database->connection();
+
+        return $this->persistWithUniqueRaceRetry(
+            $connection,
+            fn (): OperationReceipt => $this->acceptCompensationTransaction(
+                $connection,
+                $prepared,
+                $command,
+            ),
+        );
+    }
+
     /** @param Closure(): OperationReceipt $transaction */
     private function persistWithUniqueRaceRetry(Connection $connection, Closure $transaction): OperationReceipt
     {
@@ -119,6 +159,14 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
                 );
 
                 $this->scheduleNotificationBestEffort($connection, $receipt);
+                $this->telemetry->record(
+                    OperationTelemetryEvent::Accepted,
+                    new SafeOperationTelemetryContext(
+                        $receipt->scope->provider,
+                        $receipt->operationId,
+                        $receipt->operationType,
+                    ),
+                );
 
                 return $receipt;
             } catch (QueryException $failure) {
@@ -160,6 +208,145 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         $this->backfillAliasesBeforeIntentLock($connection, $prepared, new OperationId($intentId));
 
         return $this->acceptExistingIntent($connection, $prepared, $intentId);
+    }
+
+    private function acceptCompensationTransaction(
+        Connection $connection,
+        PreparedAcceptance $prepared,
+        AcceptCompensationOperation $command,
+    ): OperationReceipt {
+        $parent = $connection->table('integration_operations as operation')
+            ->join(
+                'integration_operation_authoritative_states as authoritative',
+                'authoritative.operation_id',
+                '=',
+                'operation.id',
+            )
+            ->where('operation.id', $command->compensatesOperationId->value)
+            ->where('operation.provider', $prepared->command->scope->provider->value)
+            ->where('operation.connection_key', $prepared->command->scope->connection->value)
+            ->lockForUpdate()
+            ->first([
+                'operation.provider',
+                'operation.connection_key',
+                'operation.operation_type',
+                'operation.handler_version',
+                'operation.status',
+                'operation.effect_state',
+                'authoritative.result_availability',
+                'authoritative.terminal_proof_kind',
+            ]);
+
+        if (! $parent instanceof stdClass) {
+            throw new OperationIntentConflict;
+        }
+
+        $contract = $this->compensationContract($parent, $prepared, $command);
+
+        if (! $this->parentOutcomeAllowsCompensation($parent, $contract)) {
+            throw new OperationIntentConflict;
+        }
+
+        $existingRelation = $connection->table('integration_operation_relations')
+            ->where('provider', $prepared->command->scope->provider->value)
+            ->where('connection_key', $prepared->command->scope->connection->value)
+            ->where('parent_operation_id', $command->compensatesOperationId->value)
+            ->where('purpose', OperationRelationPurpose::Compensation->value)
+            ->where('slot', $command->compensationSlot)
+            ->lockForUpdate()
+            ->first(['child_operation_id']);
+        $receipt = $this->acceptTransaction($connection, $prepared);
+
+        if ($existingRelation instanceof stdClass) {
+            if (! is_string($existingRelation->child_operation_id ?? null)
+                || ! hash_equals($existingRelation->child_operation_id, $receipt->operationId->value)) {
+                throw new OperationIntentConflict;
+            }
+
+            return $receipt;
+        }
+
+        $inserted = $connection->table('integration_operation_relations')->insert([
+            'id' => $this->ulids->generate()->value,
+            'provider' => $prepared->command->scope->provider->value,
+            'connection_key' => $prepared->command->scope->connection->value,
+            'parent_operation_id' => $command->compensatesOperationId->value,
+            'child_operation_id' => $receipt->operationId->value,
+            'purpose' => OperationRelationPurpose::Compensation->value,
+            'slot' => $command->compensationSlot,
+            'created_at' => $connection->raw('CURRENT_TIMESTAMP'),
+        ]);
+
+        if (! $inserted) {
+            throw new OperationPersistenceFailed;
+        }
+
+        return $receipt;
+    }
+
+    private function compensationContract(
+        stdClass $parent,
+        PreparedAcceptance $prepared,
+        AcceptCompensationOperation $command,
+    ): CompensationContract {
+        $definitions = $this->authoritativeDefinitions;
+
+        if (! $definitions instanceof AuthoritativeDefinitionRegistry
+            || ! $definitions->isFrozen()
+            || ! is_string($parent->provider ?? null)
+            || ! is_string($parent->operation_type ?? null)
+            || ! is_int($parent->handler_version ?? null)) {
+            throw new OperationIntentConflict;
+        }
+
+        try {
+            $definition = $definitions->find(
+                new ProviderKey($parent->provider),
+                new OperationType($parent->operation_type),
+                $parent->handler_version,
+            );
+        } catch (InvalidArgumentException) {
+            throw new OperationIntentConflict;
+        }
+
+        if (! $definition instanceof AuthoritativeOperationDefinition) {
+            throw new OperationIntentConflict;
+        }
+
+        foreach ($definition->compensations as $contract) {
+            if ($contract->slot === $command->compensationSlot
+                && $contract->childType->equals($prepared->command->operationType)) {
+                return $contract;
+            }
+        }
+
+        throw new OperationIntentConflict;
+    }
+
+    private function parentOutcomeAllowsCompensation(
+        stdClass $parent,
+        CompensationContract $contract,
+    ): bool {
+        if (! is_string($parent->status ?? null)
+            || ! is_string($parent->effect_state ?? null)
+            || ! is_string($parent->result_availability ?? null)
+            || ! is_string($parent->terminal_proof_kind ?? null)) {
+            return false;
+        }
+
+        foreach ($contract->allowedTerminalOutcomes as $outcome) {
+            if ($outcome->status->value === $parent->status
+                && $outcome->effectState->value === $parent->effect_state
+                && $outcome->resultAvailability->value === $parent->result_availability
+                && in_array($parent->terminal_proof_kind, array_map(
+                    static fn ($proof): string => $proof->value,
+                    $outcome->proofKinds,
+                ), true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function createFirstGeneration(
@@ -267,6 +454,8 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
 
         if (is_string($payload->payload_fingerprint_hmac ?? null)
             && hash_equals($payload->payload_fingerprint_hmac, $expectedFingerprint->hex)) {
+            $this->assertAuthoritativeAcceptanceMatches($connection, $prepared, (string) $operation->id);
+
             return new OperationReceipt(
                 new OperationId((string) $operation->id),
                 $command->scope,
@@ -382,7 +571,9 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         $definition = $prepared->definition;
         $payloadFingerprint = $this->activeDigest($prepared->payloadFingerprintDigests);
         $now = $connection->raw('CURRENT_TIMESTAMP');
-        $initial = $this->stateMachine->initial();
+        $initial = $prepared->authoritativeDefinition === null
+            ? $this->stateMachine->initial()
+            : $this->authoritativeStateMachine->initial($prepared->authoritativeDefinition->initialLane);
 
         if (! $writerFence->available
             || $writerFence->generation === null
@@ -422,6 +613,8 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+
+        $this->persistAuthoritativeContractAndState($connection, $prepared, $operationId);
 
         $connection->table('integration_operation_payloads')->insert([
             'id' => $this->ulids->generate()->value,
@@ -473,6 +666,107 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         }
 
         return new OperationReceipt($operationId, $command->scope, $command->operationType, false);
+    }
+
+    private function persistAuthoritativeContractAndState(
+        Connection $connection,
+        PreparedAcceptance $prepared,
+        OperationId $operationId,
+    ): void {
+        $definition = $prepared->authoritativeDefinition;
+
+        if ($definition === null) {
+            return;
+        }
+
+        $writeActivationSlot = $prepared->writeActivationSlot
+            ?? throw new OperationIntentConflict;
+        $now = $connection->raw('CURRENT_TIMESTAMP');
+
+        foreach ($definition->writeActivation->writeActivationSlots as $slot => $activation) {
+            $connection->table('integration_operation_write_activations')->insertOrIgnore([
+                'provider' => $definition->provider->value,
+                'operation_type' => $definition->operationType->value,
+                'handler_version' => $definition->versions->handler,
+                'activation_slot' => $slot,
+                'activation' => $activation->value,
+                'created_at' => $now,
+            ]);
+
+            $storedActivation = $connection->table('integration_operation_write_activations')
+                ->where('provider', $definition->provider->value)
+                ->where('operation_type', $definition->operationType->value)
+                ->where('handler_version', $definition->versions->handler)
+                ->where('activation_slot', $slot)
+                ->value('activation');
+
+            if ($storedActivation !== $activation->value) {
+                throw new OperationIntentConflict;
+            }
+        }
+
+        foreach ($definition->terminalOutcomes->pairs as $outcome) {
+            foreach ($outcome->proofKinds as $proofKind) {
+                $connection->table('integration_operation_terminal_outcomes')->insertOrIgnore([
+                    'provider' => $definition->provider->value,
+                    'operation_type' => $definition->operationType->value,
+                    'handler_version' => $definition->versions->handler,
+                    'status' => $outcome->status->value,
+                    'effect_state' => $outcome->effectState->value,
+                    'result_availability' => $outcome->resultAvailability->value,
+                    'proof_kind' => $proofKind->value,
+                    'created_at' => $now,
+                ]);
+            }
+        }
+
+        $polling = $definition->initialLane === InitialOperationLane::Poll
+            ? $definition->polling ?? throw new OperationIntentConflict
+            : null;
+        $pollDeadline = $polling === null
+            ? null
+            : $connection->scalar(
+                'SELECT CURRENT_TIMESTAMP + make_interval(secs => ?) AS deadline_at',
+                [$polling->deadlineSeconds],
+            );
+
+        $connection->table('integration_operation_authoritative_states')->insert([
+            'operation_id' => $operationId->value,
+            'contract_version' => AuthoritativeOperationDefinition::ContractVersion,
+            'initial_lane' => $definition->initialLane->value,
+            'write_activation_slot' => $writeActivationSlot,
+            'poll_purpose' => $polling === null ? null : PollPurpose::Preflight->value,
+            'poll_attempts' => 0,
+            'poll_deadline_at' => $pollDeadline,
+            'next_poll_at' => $polling === null ? null : $now,
+            'last_polled_at' => null,
+            'result_availability' => ResultAvailability::NotReady->value,
+            'terminal_proof_kind' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    private function assertAuthoritativeAcceptanceMatches(
+        Connection $connection,
+        PreparedAcceptance $prepared,
+        string $operationId,
+    ): void {
+        if ($prepared->authoritativeDefinition === null) {
+            return;
+        }
+
+        $state = $connection->table('integration_operation_authoritative_states')
+            ->where('operation_id', $operationId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $state instanceof stdClass
+            || ($state->contract_version ?? null) !== AuthoritativeOperationDefinition::ContractVersion
+            || ($state->initial_lane ?? null) !== $prepared->authoritativeDefinition->initialLane->value
+            || ($state->write_activation_slot ?? null) !== $prepared->writeActivationSlot) {
+            throw new OperationIntentConflict;
+        }
     }
 
     /**
@@ -721,6 +1015,17 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         }
 
         $definition = $this->definition($command);
+        $authoritativeDefinition = $this->authoritativeDefinition($command, $definition);
+        $writeActivationSlot = null;
+
+        if ($authoritativeDefinition !== null) {
+            [$command, $writeActivationSlot] = $this->canonicalizeAuthoritativeCommand(
+                $command,
+                $authoritativeDefinition,
+            );
+            $this->assertAuthoritativeIdentity($authoritativeDefinition, $command);
+        }
+
         (new ManagedMutationIdentityPolicy)->assertSatisfiedBy($definition, $command->intent);
         $this->assertLocalReferenceType($command->intent->localReference);
         $writerFence = $this->writerFences->current($command->scope, $command->operationType)
@@ -756,6 +1061,8 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         return new PreparedAcceptance(
             command: $command,
             definition: $definition,
+            authoritativeDefinition: $authoritativeDefinition,
+            writeActivationSlot: $writeActivationSlot,
             writerFence: $writerFence,
             candidateIntentId: $candidateIntentId,
             candidateOperationId: $candidateOperationId,
@@ -798,6 +1105,19 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
                 || $failure instanceof ManagedMutationIdentityRejected
                 || $failure instanceof WriterFenceUnavailable
                 || $failure instanceof WriterFenceRejected)) {
+                if ($failure instanceof WriterFenceUnavailable || $failure instanceof WriterFenceRejected) {
+                    $this->telemetry->record(
+                        OperationTelemetryEvent::FenceDenied,
+                        new SafeOperationTelemetryContext(
+                            $command->scope->provider,
+                            operationType: $command->operationType,
+                            reasonCode: $failure instanceof WriterFenceRejected
+                                ? 'writer_fence_rejected'
+                                : 'writer_fence_unavailable',
+                        ),
+                    );
+                }
+
                 throw $failure;
             }
 
@@ -925,6 +1245,93 @@ final readonly class DatabaseOperationCoordinator implements OperationCoordinato
         }
 
         return $definition;
+    }
+
+    private function authoritativeDefinition(
+        AcceptOperation $command,
+        OperationDefinition $legacyDefinition,
+    ): ?AuthoritativeOperationDefinition {
+        $container = $this->container ?? Container::getInstance();
+        $registry = $this->authoritativeDefinitions;
+
+        if ($registry === null && $container->bound(AuthoritativeDefinitionRegistry::class)) {
+            $registry = $container->make(AuthoritativeDefinitionRegistry::class);
+        }
+
+        if ($registry === null) {
+            return null;
+        }
+
+        if (! $registry->isFrozen()) {
+            throw new UnsupportedOperationDefinition;
+        }
+
+        $definition = $registry->find(
+            $command->scope->provider,
+            $command->operationType,
+            $command->versions->handler,
+        );
+
+        if ($definition === null) {
+            return null;
+        }
+
+        if ($definition->versions->payloadSchema !== $command->versions->payloadSchema
+            || $definition->versions->resultSchema !== $command->versions->resultSchema
+            || $definition->maximumRemoteWrites !== $legacyDefinition->maximumRemoteWrites) {
+            throw new UnsupportedOperationDefinition;
+        }
+
+        return $definition;
+    }
+
+    /** @return array{AcceptOperation, string} */
+    private function canonicalizeAuthoritativeCommand(
+        AcceptOperation $command,
+        AuthoritativeOperationDefinition $definition,
+    ): array {
+        $container = $this->container ?? Container::getInstance();
+        $resolved = ($this->authoritativeDefinitions ?? $container->make(AuthoritativeDefinitionRegistry::class))
+            ->resolveTrustedService($definition->payloadCodec, $container);
+
+        if (! $resolved instanceof OperationPayloadCodec) {
+            throw new UnsupportedOperationDefinition;
+        }
+
+        $payload = $resolved->canonicalize($command->payload);
+        $writeActivationSlot = $resolved->writeActivationSlot($payload);
+        $definition->writeActivation->requireWriteActivationSlot($writeActivationSlot);
+
+        return [
+            new AcceptOperation(
+                $command->scope,
+                $command->operationType,
+                $command->versions,
+                $command->intent,
+                $payload,
+                $command->context,
+                $command->priority,
+            ),
+            $writeActivationSlot,
+        ];
+    }
+
+    private function assertAuthoritativeIdentity(
+        AuthoritativeOperationDefinition $definition,
+        AcceptOperation $command,
+    ): void {
+        if ($definition->maximumRemoteWrites === 0) {
+            return;
+        }
+
+        if ($command->intent->localReference === null) {
+            throw new LocalReferenceRequired;
+        }
+
+        if ($definition->managedMutationIdentity === null
+            || ! $definition->managedMutationIdentity->allows($command->intent)) {
+            throw new ManagedMutationIdentityRejected;
+        }
     }
 
     private function assertLocalReferenceType(?LocalReference $reference): void
