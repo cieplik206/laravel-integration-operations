@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cieplik206\IntegrationOperations\Runtime;
 
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
 use Cieplik206\IntegrationOperations\Contracts\OperationTelemetry;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
 use Cieplik206\IntegrationOperations\Crypto\BoundPayloadEnvelopeCodec;
@@ -56,10 +57,11 @@ final readonly class DatabaseAuthoritativePollFinalizer
         PollOutcome $outcome,
         ?EncodedResult $encodedResult,
         ObservationProjectionPlan $projection,
+        ?ObservationProjector $projector,
     ): void {
         if ($definition->observationProjection === null
             || ! $projection->isCompatibleWith($definition->observationProjection)
-            || $projection->mutations !== []) {
+            || ($projection->mutations !== [] && $projector === null)) {
             throw new OperationPersistenceFailed;
         }
 
@@ -68,6 +70,8 @@ final readonly class DatabaseAuthoritativePollFinalizer
             $definition,
             $outcome,
             $encodedResult,
+            $projection,
+            $projector,
         ): void {
             [$operation, $state, $attempt, $effectState, $observedAt] = $this->lockLifecycle(
                 $connection,
@@ -82,6 +86,16 @@ final readonly class DatabaseAuthoritativePollFinalizer
                 $encodedResult,
                 $effectState,
             );
+
+            if ($projector !== null) {
+                $transactionLevel = $connection->transactionLevel();
+                $projector->project($loaded->view, $outcome, $projection);
+
+                if ($connection->transactionLevel() !== $transactionLevel) {
+                    throw new OperationConcurrencyViolation;
+                }
+            }
+
             $transition = $this->stateMachine->transition(
                 OperationStatus::Polling,
                 $effectState,

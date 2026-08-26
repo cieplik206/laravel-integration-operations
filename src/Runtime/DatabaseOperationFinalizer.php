@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cieplik206\IntegrationOperations\Runtime;
 
 use Cieplik206\IntegrationOperations\Contracts\ExecutionOutcome;
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
 use Cieplik206\IntegrationOperations\Contracts\OperationTelemetry;
 use Cieplik206\IntegrationOperations\Contracts\OutcomeProjector;
 use Cieplik206\IntegrationOperations\Contracts\UlidFactory;
@@ -34,6 +35,7 @@ use Cieplik206\IntegrationOperations\ValueObjects\AuthoritativeReconciliationOut
 use Cieplik206\IntegrationOperations\ValueObjects\EncodedResult;
 use Cieplik206\IntegrationOperations\ValueObjects\EncryptedEnvelope;
 use Cieplik206\IntegrationOperations\ValueObjects\FailureClassification;
+use Cieplik206\IntegrationOperations\ValueObjects\ObservationProjectionPlan;
 use Cieplik206\IntegrationOperations\ValueObjects\PayloadEnvelopeBinding;
 use Cieplik206\IntegrationOperations\ValueObjects\ProjectionPlan;
 use Cieplik206\IntegrationOperations\ValueObjects\ReconciliationOutcome;
@@ -378,6 +380,8 @@ final readonly class DatabaseOperationFinalizer
         ?EncodedResult $encodedResult,
         ?OutcomeProjector $projector,
         ?ProjectionPlan $projection,
+        ?ObservationProjector $observationProjector,
+        ?ObservationProjectionPlan $observationProjection,
     ): void {
         $this->transaction(function (Connection $connection) use (
             $loaded,
@@ -387,6 +391,8 @@ final readonly class DatabaseOperationFinalizer
             $encodedResult,
             $projector,
             $projection,
+            $observationProjector,
+            $observationProjection,
         ): void {
             [$operation, $attempt, $fromStatus, $fromEffect, $observedAt] = $this->lockClaimedLifecycle($connection, $loaded);
 
@@ -435,6 +441,27 @@ final readonly class DatabaseOperationFinalizer
                 $definition->maximumRemoteWrites,
                 $definition->successEffectPolicy,
             );
+
+            if ($definition->observationProjection === null) {
+                if ($observationProjector !== null || $observationProjection !== null) {
+                    throw new OperationConcurrencyViolation;
+                }
+            } else {
+                if (! $observationProjection instanceof ObservationProjectionPlan
+                    || ! $observationProjection->isCompatibleWith($definition->observationProjection)
+                    || ($observationProjection->mutations !== [] && $observationProjector === null)) {
+                    throw new OperationConcurrencyViolation;
+                }
+
+                if ($observationProjector !== null) {
+                    $transactionLevel = $connection->transactionLevel();
+                    $observationProjector->project($loaded->view, $reconciliation, $observationProjection);
+
+                    if ($connection->transactionLevel() !== $transactionLevel) {
+                        throw new OperationConcurrencyViolation;
+                    }
+                }
+            }
 
             if ($availability === ResultAvailability::Available) {
                 if (! $outcome instanceof ExecutionOutcome

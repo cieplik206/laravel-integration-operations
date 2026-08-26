@@ -8,6 +8,7 @@ use Cieplik206\IntegrationOperations\Contracts\AuthoritativeFailureClassifier;
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeReconciliationStrategy;
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeRetryPolicy;
 use Cieplik206\IntegrationOperations\Contracts\ObservationProjectionPlanner;
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
 use Cieplik206\IntegrationOperations\Contracts\OperationHandler;
 use Cieplik206\IntegrationOperations\Contracts\OperationPayloadCodec;
 use Cieplik206\IntegrationOperations\Contracts\OperationResultCodec;
@@ -78,6 +79,7 @@ final readonly class AuthoritativeOperationDefinition
         public ServiceReference $retryPolicy,
         public ?ServiceReference $reconciliationStrategy,
         public ?ServiceReference $pollingStrategy,
+        public ?ServiceReference $observationProjector = null,
     ) {
         $safeRetryEvidence = ImmutableValueSanitizer::stringList(
             $safeRetryEvidence,
@@ -123,6 +125,15 @@ final readonly class AuthoritativeOperationDefinition
                 'Authoritative compensation contracts',
             ),
         );
+
+        if (($observationProjector !== null && $observationProjection === null)
+            || ($observationProjection !== null
+                && $observationProjection->targetIds !== []
+                && $observationProjector === null)
+            || ($observationProjector !== null
+                && ! $observationProjector->targets(ObservationProjector::class))) {
+            throw new InvalidArgumentException('Authoritative observation projector contract is invalid.');
+        }
     }
 
     public function registryKey(): string
@@ -143,6 +154,7 @@ final readonly class AuthoritativeOperationDefinition
             'result_codec' => ['reference' => $this->resultEnvelope->resultCodec, 'contract' => OperationResultCodec::class],
             'outcome_projection_planner' => ['reference' => $this->projection->planner, 'contract' => OutcomeProjectionPlanner::class],
             'observation_projection_planner' => ['reference' => $this->observationProjection?->planner, 'contract' => ObservationProjectionPlanner::class],
+            'observation_projector' => ['reference' => $this->observationProjector, 'contract' => ObservationProjector::class],
         ];
     }
 

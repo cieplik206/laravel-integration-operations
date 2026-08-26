@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.2 - 2026-08-26
+
+- Add a trusted provider observation projector that applies validated polling
+  and reconciliation projection plans inside the kernel transaction.
+- Keep empty observation plans backwards compatible while requiring an exact
+  projector binding for every declared observation target.
+
 ## 0.3.1 - 2026-08-26
 
 - Allow a successful single-effect handler to release its execution lease and

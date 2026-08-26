@@ -10,6 +10,7 @@ use Cieplik206\IntegrationOperations\Contracts\AuthoritativeRetryPolicy;
 use Cieplik206\IntegrationOperations\Contracts\ExecutionOutcome;
 use Cieplik206\IntegrationOperations\Contracts\FailureClassifier;
 use Cieplik206\IntegrationOperations\Contracts\ObservationProjectionPlanner;
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
 use Cieplik206\IntegrationOperations\Contracts\OperationHandler;
 use Cieplik206\IntegrationOperations\Contracts\OperationLeaseManager;
 use Cieplik206\IntegrationOperations\Contracts\OperationProcessor;
@@ -207,6 +208,11 @@ final readonly class DatabaseOperationProcessor implements OperationProcessor
                     $authoritative,
                     $authoritativeOutcome,
                 );
+                [$observationProjector, $observationProjection] = $this->authoritativeObservationProjection(
+                    $loaded,
+                    $authoritative,
+                    $authoritativeOutcome,
+                );
                 $this->finalizer->reconcileAuthoritative(
                     $loaded,
                     $authoritative,
@@ -215,6 +221,8 @@ final readonly class DatabaseOperationProcessor implements OperationProcessor
                     $encodedResult,
                     $projector,
                     $projection,
+                    $observationProjector,
+                    $observationProjection,
                 );
 
                 return;
@@ -379,8 +387,15 @@ final readonly class DatabaseOperationProcessor implements OperationProcessor
                     new ObservationProjectionInput($loaded->view, $outcome),
                 ),
             );
+            $projector = $definition->observationProjector === null
+                ? null
+                : $this->resolveAuthoritative(
+                    $definition,
+                    $definition->observationProjector,
+                    ObservationProjector::class,
+                );
             $encodedResult = $this->encodeAuthoritativePollResult($definition, $outcome);
-            $finalizer->finalize($loaded, $definition, $outcome, $encodedResult, $projection);
+            $finalizer->finalize($loaded, $definition, $outcome, $encodedResult, $projection, $projector);
         } catch (Throwable) {
             $finalizer->runtimeFailure($loaded, $definition, 'poll_runtime_contract');
         }
@@ -535,6 +550,37 @@ final readonly class DatabaseOperationProcessor implements OperationProcessor
         $projector = $this->resolve($loaded->definition->outcomeProjector, OutcomeProjector::class);
 
         return [new ExecutionOutcome($result), $encodedResult, $projector, $projection];
+    }
+
+    /** @return array{ObservationProjector|null, ObservationProjectionPlan|null} */
+    private function authoritativeObservationProjection(
+        LoadedOperation $loaded,
+        AuthoritativeOperationDefinition $definition,
+        AuthoritativeReconciliationOutcome $observation,
+    ): array {
+        if ($definition->observationProjection === null) {
+            return [null, null];
+        }
+
+        $planner = $this->resolveAuthoritative(
+            $definition,
+            $definition->observationProjection->planner,
+            ObservationProjectionPlanner::class,
+        );
+        $projection = $this->providerCall(
+            fn (): ObservationProjectionPlan => $planner->plan(
+                new ObservationProjectionInput($loaded->view, $observation),
+            ),
+        );
+        $projector = $definition->observationProjector === null
+            ? null
+            : $this->resolveAuthoritative(
+                $definition,
+                $definition->observationProjector,
+                ObservationProjector::class,
+            );
+
+        return [$projector, $projection];
     }
 
     /**

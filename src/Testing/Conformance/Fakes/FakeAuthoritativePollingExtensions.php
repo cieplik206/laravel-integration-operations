@@ -7,20 +7,27 @@ namespace Cieplik206\IntegrationOperations\Testing\Conformance\Fakes;
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeReconciliationContext;
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeReconciliationStrategy;
 use Cieplik206\IntegrationOperations\Contracts\ObservationProjectionPlanner;
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
+use Cieplik206\IntegrationOperations\Contracts\OperationView;
 use Cieplik206\IntegrationOperations\Contracts\PollingContext;
 use Cieplik206\IntegrationOperations\Contracts\PollingStrategy;
 use Cieplik206\IntegrationOperations\ValueObjects\AuthoritativeReconciliationOutcome;
 use Cieplik206\IntegrationOperations\ValueObjects\ObservationProjectionInput;
 use Cieplik206\IntegrationOperations\ValueObjects\ObservationProjectionPlan;
 use Cieplik206\IntegrationOperations\ValueObjects\PollOutcome;
+use Cieplik206\IntegrationOperations\ValueObjects\ProjectionMutation;
 
-final class FakeAuthoritativePollingExtensions implements AuthoritativeReconciliationStrategy, ObservationProjectionPlanner, PollingStrategy
+final class FakeAuthoritativePollingExtensions implements AuthoritativeReconciliationStrategy, ObservationProjectionPlanner, ObservationProjector, PollingStrategy
 {
     public static bool $failOnConstruction = false;
 
     public static int $constructionAttempts = 0;
 
     public static bool $sendRequiredOnce = false;
+
+    public static bool $projectObservation = false;
+
+    public static int $projectionAttempts = 0;
 
     public static ?AuthoritativeReconciliationOutcome $reconciliationOutcome = null;
 
@@ -49,7 +56,24 @@ final class FakeAuthoritativePollingExtensions implements AuthoritativeReconcili
 
     public function plan(ObservationProjectionInput $input): ObservationProjectionPlan
     {
-        return new ObservationProjectionPlan(1, []);
+        return new ObservationProjectionPlan(1, self::$projectObservation
+            ? [new ProjectionMutation(
+                'fixture_authoritative.observation',
+                ['operation_id' => $input->operation->operationId()->value],
+                null,
+                ['evidence' => 'fixture_observed'],
+            )]
+            : []);
+    }
+
+    public function project(
+        OperationView $operation,
+        PollOutcome|AuthoritativeReconciliationOutcome $observation,
+        ObservationProjectionPlan $plan,
+    ): void {
+        if ($plan->mutations !== []) {
+            self::$projectionAttempts++;
+        }
     }
 
     public function reconcile(AuthoritativeReconciliationContext $context): AuthoritativeReconciliationOutcome

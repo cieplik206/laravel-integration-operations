@@ -9,6 +9,7 @@ use Cieplik206\IntegrationOperations\Contracts\AuthoritativeOperationDefinitionP
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeReconciliationStrategy;
 use Cieplik206\IntegrationOperations\Contracts\AuthoritativeRetryPolicy;
 use Cieplik206\IntegrationOperations\Contracts\ObservationProjectionPlanner;
+use Cieplik206\IntegrationOperations\Contracts\ObservationProjector;
 use Cieplik206\IntegrationOperations\Contracts\OperationHandler;
 use Cieplik206\IntegrationOperations\Contracts\OperationPayloadCodec;
 use Cieplik206\IntegrationOperations\Contracts\OperationResultCodec;
@@ -186,7 +187,7 @@ final class FakeAuthoritativeDefinitionProvider implements AuthoritativeOperatio
             observationProjection: new ProjectionContract(
                 new ServiceReference($pollingExtensions, ObservationProjectionPlanner::class),
                 1,
-                [],
+                ['fixture_authoritative.observation'],
             ),
             compensations: [new CompensationContract(
                 new OperationType('fixture_authoritative.resource.ensure'),
@@ -208,6 +209,7 @@ final class FakeAuthoritativeDefinitionProvider implements AuthoritativeOperatio
                 AuthoritativeReconciliationStrategy::class,
             ),
             pollingStrategy: new ServiceReference($pollingExtensions, PollingStrategy::class),
+            observationProjector: new ServiceReference($pollingExtensions, ObservationProjector::class),
         );
 
         yield new AuthoritativeOperationDefinition(
@@ -270,7 +272,11 @@ final class FakeAuthoritativeDefinitionProvider implements AuthoritativeOperatio
                 1,
                 [],
             ),
-            observationProjection: null,
+            observationProjection: new ProjectionContract(
+                new ServiceReference($pollingExtensions, ObservationProjectionPlanner::class),
+                1,
+                ['fixture_authoritative.observation'],
+            ),
             compensations: [],
             payloadCodec: new ServiceReference($extensions, OperationPayloadCodec::class),
             handler: new ServiceReference($extensions, OperationHandler::class),
@@ -281,6 +287,7 @@ final class FakeAuthoritativeDefinitionProvider implements AuthoritativeOperatio
                 AuthoritativeReconciliationStrategy::class,
             ),
             pollingStrategy: null,
+            observationProjector: new ServiceReference($pollingExtensions, ObservationProjector::class),
         );
     }
 }

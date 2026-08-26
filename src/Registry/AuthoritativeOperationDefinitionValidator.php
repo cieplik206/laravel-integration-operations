@@ -331,9 +331,18 @@ final class AuthoritativeOperationDefinitionValidator
         $violations = [];
         $hasPollingContract = $definition->polling !== null;
 
-        if ($hasPollingContract !== ($definition->pollingStrategy !== null)
-            || $hasPollingContract !== ($definition->observationProjection !== null)) {
-            $violations[] = 'polling contract, strategy, and observation projection must be declared together';
+        if ($hasPollingContract !== ($definition->pollingStrategy !== null)) {
+            $violations[] = 'polling contract and strategy must be declared together';
+        }
+
+        if ($hasPollingContract && $definition->observationProjection === null) {
+            $violations[] = 'polling operation must declare an observation projection';
+        }
+
+        if ($definition->observationProjection !== null
+            && ! $hasPollingContract
+            && $definition->reconciliationStrategy === null) {
+            $violations[] = 'observation projection requires polling or reconciliation';
         }
 
         if ($definition->initialLane === InitialOperationLane::Poll && ! $hasPollingContract) {
