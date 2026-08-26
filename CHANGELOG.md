@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 - 2026-08-26
+
+- Add the durable PostgreSQL operation runtime with encrypted payloads,
+  idempotent acceptance, leases, heartbeats, recovery, reconciliation, manual
+  resolution, scoped queries, and operational commands.
+- Add the single-effect boundary, managed mutation identity checks, and the
+  authoritative writer-fence cutover guard.
+- Add Redis-backed, scope-aware rate limiting and circuit breaking.
+- Require PDO PostgreSQL explicitly and commit the dependency lock used by the
+  compatibility gate.
+
 ## 0.1.0 - 2026-08-25
 
 - Add the installable Laravel 13 RT-1 foundation with auto-discovery and

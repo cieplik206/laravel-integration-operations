@@ -49,10 +49,12 @@ only canonical immutable values.
 
 GitHub workflows are not the release authority. Every milestone must run
 `composer check` locally. It validates Composer metadata, formatting, PHPStan
-level 7, the complete Pest suite, and the installed dependency security audit.
-The Testbench suite boots against deliberately unreachable PostgreSQL and Redis
-endpoints and fails if package boot attempts database, migration, cache, queue,
-credential, or outbound HTTP I/O.
+level 7, the complete offline Pest suite, the real PostgreSQL suite without
+skips, and the installed dependency security audit. Release candidates run the
+dependency and database gates on PHP 8.4 and PHP 8.5. The Testbench suite also
+boots against deliberately unreachable PostgreSQL and Redis endpoints and
+fails if package boot attempts database, migration, cache, queue, credential,
+or outbound HTTP I/O.
 
 ## Support status
 

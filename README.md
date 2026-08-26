@@ -46,7 +46,9 @@ business workflows remain in the consuming application.
 ## Requirements
 
 - PHP 8.4 or newer;
-- Laravel 13.
+- Laravel 13;
+- PHP PDO and PDO PostgreSQL extensions;
+- PostgreSQL, with PostgreSQL 17 used by the blocking release gate.
 
 ## Installation
 
@@ -61,6 +63,13 @@ changed container binding.
 
     composer install
     composer check
+
+## Durable runtime
+
+Publish the package migrations and configure an independent payload-encryption
+key before accepting operations. Provider packages register immutable operation
+definitions; consuming applications receive receipts and scoped snapshots
+without importing lease or recovery internals.
 
 ## License
 
