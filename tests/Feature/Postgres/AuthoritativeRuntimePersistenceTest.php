@@ -531,6 +531,7 @@ it('releases the write lease and resumes durable observation polling after one s
     FakeAuthoritativePollingExtensions::$sendRequiredOnce = true;
     FakeAuthoritativePollingExtensions::$projectObservation = true;
     FakeAuthoritativePollingExtensions::$projectionAttempts = 0;
+    FakeAuthoritativePollingExtensions::$projectedStatuses = [];
     FakeAuthoritativeLegacyProviderExtensions::$openEffectBoundary = true;
     FakeAuthoritativeLegacyProviderExtensions::$awaitPolling = true;
 
@@ -575,7 +576,8 @@ it('releases the write lease and resumes durable observation polling after one s
         ->and($terminal?->resultAvailability)->toBe(ResultAvailability::Available)
         ->and($terminal?->terminalProofKind)->toBe(TerminalProofKind::Poll)
         ->and($terminal?->result)->toEqual(new FakeAuthoritativeOperationResult('polled'))
-        ->and(FakeAuthoritativePollingExtensions::$projectionAttempts)->toBe(2);
+        ->and(FakeAuthoritativePollingExtensions::$projectionAttempts)->toBe(2)
+        ->and(FakeAuthoritativePollingExtensions::$projectedStatuses)->toBe(['not_sent', 'ok']);
 });
 
 it('terminalizes an authoritative provider rejection as failed applied with an available result', function (): void {
@@ -652,6 +654,7 @@ it('terminalizes an authoritative provider rejection as failed applied with an a
     FakeAuthoritativeProviderExtensions::$classifyAsUncertain = true;
     FakeAuthoritativePollingExtensions::$projectObservation = true;
     FakeAuthoritativePollingExtensions::$projectionAttempts = 0;
+    FakeAuthoritativePollingExtensions::$projectedStatuses = [];
 
     try {
         app(OperationProcessor::class)->process($receipt->operationId);
@@ -667,6 +670,7 @@ it('terminalizes an authoritative provider rejection as failed applied with an a
             new FakeAuthoritativeOperationResult('provider-rejected'),
             new SafeOperationFailure('fixture_provider_rejected', 'The fixture provider rejected the operation.'),
             'fixture.provider_rejected',
+            new CanonicalObject(['status' => 'rejected']),
         );
 
         app(OperationProcessor::class)->process($receipt->operationId);
@@ -697,7 +701,8 @@ it('terminalizes an authoritative provider rejection as failed applied with an a
         ->and($attempts->pluck('safe_outcome_category')->all())->toBe(['uncertain', 'provider_rejected'])
         ->and($attempts->first()?->safe_metadata)->toContain('lost_response')
         ->and($attempts->last()?->safe_metadata)->toContain('fixture.provider_rejected')
-        ->and(FakeAuthoritativePollingExtensions::$projectionAttempts)->toBe(1);
+        ->and(FakeAuthoritativePollingExtensions::$projectionAttempts)->toBe(1)
+        ->and(FakeAuthoritativePollingExtensions::$projectedStatuses)->toBe(['rejected']);
 });
 
 it('accepts an eligible compensation and its relation atomically and idempotently', function (): void {

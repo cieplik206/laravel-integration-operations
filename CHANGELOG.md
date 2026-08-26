@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.3 - 2026-08-26
+
+- Carry a bounded immutable provider observation on polling and authoritative
+  reconciliation outcomes so provider projectors can persist raw non-terminal
+  states atomically with the kernel lifecycle transition.
+- Keep every existing outcome factory call backwards compatible by making the
+  observation an optional final argument.
+
 ## 0.3.2 - 2026-08-26
 
 - Add a trusted provider observation projector that applies validated polling

@@ -168,6 +168,32 @@ it('keeps authoritative observation projection input free from legacy reconcilia
         ->not->toContain(ReconciliationOutcome::class);
 });
 
+it('carries bounded canonical provider observations through polling and reconciliation outcomes', function (): void {
+    $pollObservation = new CanonicalObject([
+        'raw_status' => 'processing',
+        'details' => ['sequence' => 3],
+    ]);
+    $reconciliationObservation = new CanonicalObject([
+        'raw_status' => 'ok',
+        'government_id' => 'KSeF:fixture',
+    ]);
+
+    $poll = PollOutcome::wait('provider.processing', null, $pollObservation);
+    $reconciliation = AuthoritativeReconciliationOutcome::foundExact(
+        new AuthoritativeFixtureResult,
+        'provider.accepted',
+        $reconciliationObservation,
+    );
+
+    expect($poll->providerObservation?->values)->toBe([
+        'raw_status' => 'processing',
+        'details' => ['sequence' => 3],
+    ])->and($reconciliation->providerObservation?->values)->toBe([
+        'raw_status' => 'ok',
+        'government_id' => 'KSeF:fixture',
+    ]);
+});
+
 it('accepts only canonical transport templates and renders exact scalar parameter maps', function (): void {
     $target = new TransportTargetDefinition(
         'invoice.read',
