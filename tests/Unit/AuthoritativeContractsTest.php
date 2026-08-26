@@ -293,6 +293,18 @@ it('represents provider rejection without a caller-selected effect state', funct
         ->and(array_key_exists('effectState', get_object_vars($outcome)))->toBeFalse();
 });
 
+it('represents a confirmed non-terminal write without fabricating a terminal result', function (): void {
+    $outcome = AuthoritativeReconciliationOutcome::appliedInProgress(
+        'provider.processing',
+        new CanonicalObject(['status' => 'processing']),
+    );
+
+    expect($outcome->result)->toBe(AuthoritativeReconciliationResult::AppliedInProgress)
+        ->and($outcome->operationResult)->toBeNull()
+        ->and($outcome->safeFailure)->toBeNull()
+        ->and($outcome->providerObservation?->values)->toBe(['status' => 'processing']);
+});
+
 it('keeps authoritative failure provenance and relative retry hints typed and disjoint', function (): void {
     $failure = new SafeOperationFailure('transport_timeout', 'The transport timed out.');
     $uncertain = new ClassifiedFailure(

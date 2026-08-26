@@ -37,6 +37,19 @@ final readonly class AuthoritativeReconciliationOutcome
         return new self(AuthoritativeReconciliationResult::FoundExact, $evidenceCode, $result, null, $providerObservation);
     }
 
+    public static function appliedInProgress(
+        string $evidenceCode,
+        ?CanonicalObject $providerObservation = null,
+    ): self {
+        return new self(
+            AuthoritativeReconciliationResult::AppliedInProgress,
+            $evidenceCode,
+            null,
+            null,
+            $providerObservation,
+        );
+    }
+
     public static function absentConclusive(
         SafeOperationFailure $failure,
         string $evidenceCode,

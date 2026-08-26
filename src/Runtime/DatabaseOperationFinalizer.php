@@ -408,6 +408,12 @@ final readonly class DatabaseOperationFinalizer
                     ResultAvailability::Available,
                     null,
                 ],
+                AuthoritativeReconciliationResult::AppliedInProgress => [
+                    OperationStatus::PollWait,
+                    EffectState::Applied,
+                    ResultAvailability::NotReady,
+                    null,
+                ],
                 AuthoritativeReconciliationResult::AbsentConclusive => [
                     OperationStatus::Failed,
                     EffectState::NotApplied,
@@ -461,6 +467,15 @@ final readonly class DatabaseOperationFinalizer
                         throw new OperationConcurrencyViolation;
                     }
                 }
+            }
+
+            if ($reconciliation->result === AuthoritativeReconciliationResult::AppliedInProgress) {
+                $this->continueAuthoritativePollingAfterReconciliation(
+                    $connection,
+                    $loaded,
+                    $definition,
+                    $observedAt,
+                );
             }
 
             if ($availability === ResultAvailability::Available) {
@@ -530,6 +545,33 @@ final readonly class DatabaseOperationFinalizer
                 'reconciliation_'.$reconciliation->result->value,
             );
         });
+    }
+
+    private function continueAuthoritativePollingAfterReconciliation(
+        Connection $connection,
+        LoadedOperation $loaded,
+        AuthoritativeOperationDefinition $definition,
+        string $observedAt,
+    ): void {
+        if ($definition->polling === null || $definition->pollingStrategy === null) {
+            throw new OperationConcurrencyViolation;
+        }
+
+        $updated = $connection->table('integration_operation_authoritative_states')
+            ->where('operation_id', $loaded->lease->claim()->operationId->value)
+            ->where('poll_purpose', PollPurpose::Preflight->value)
+            ->where('result_availability', ResultAvailability::NotReady->value)
+            ->whereNull('terminal_proof_kind')
+            ->whereNotNull('poll_deadline_at')
+            ->update([
+                'poll_purpose' => PollPurpose::Observation->value,
+                'next_poll_at' => $observedAt,
+                'updated_at' => $observedAt,
+            ]);
+
+        if ($updated !== 1) {
+            throw new OperationConcurrencyViolation;
+        }
     }
 
     public function runtimeFailure(LoadedOperation $loaded, string $reasonCode): void

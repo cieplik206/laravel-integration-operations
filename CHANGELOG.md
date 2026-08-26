@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.4 - 2026-08-26
+
+- Add the authoritative `applied_in_progress` reconciliation outcome for a
+  single remote write whose effect is confirmed but whose provider workflow is
+  still non-terminal.
+- Atomically move that outcome from reconciliation back to durable observation
+  polling without reopening the write boundary or consuming a second send.
+
 ## 0.3.3 - 2026-08-26
 
 - Carry a bounded immutable provider observation on polling and authoritative

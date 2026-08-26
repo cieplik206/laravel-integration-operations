@@ -8,6 +8,7 @@ namespace Cieplik206\IntegrationOperations\Enums;
 enum AuthoritativeReconciliationResult: string
 {
     case FoundExact = 'found_exact';
+    case AppliedInProgress = 'applied_in_progress';
     case AbsentConclusive = 'absent_conclusive';
     case Inconclusive = 'inconclusive';
     case AmbiguousMatches = 'ambiguous_matches';
