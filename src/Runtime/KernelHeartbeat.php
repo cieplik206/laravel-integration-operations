@@ -6,6 +6,7 @@ namespace Cieplik206\IntegrationOperations\Runtime;
 
 use Cieplik206\IntegrationOperations\Contracts\OperationLeaseManager;
 use Cieplik206\IntegrationOperations\Contracts\PendingOperationDispatcher;
+use Cieplik206\IntegrationOperations\ValueObjects\IntegrationScope;
 use Cieplik206\IntegrationOperations\ValueObjects\KernelHeartbeatReport;
 use Illuminate\Contracts\Config\Repository;
 use InvalidArgumentException;
@@ -27,11 +28,17 @@ final readonly class KernelHeartbeat
         $quarantined = 0;
         $deferred = 0;
         $skipped = 0;
-        $limit = $this->batchLimit();
+        $scopes = $this->scopes->all();
+        $connectionLimit = $this->connectionBatchLimit();
+        $dispatchLimits = $this->dispatchLimits($scopes, $connectionLimit);
 
-        foreach ($this->scopes->all() as $scope) {
-            $dispatchBatches[] = $this->dispatcher->dispatch($scope, $limit);
-            $recovery = $this->leases->recoverExpired($scope, $limit, max($limit, $this->scanLimit()));
+        foreach ($scopes as $index => $scope) {
+            $dispatchBatches[] = $this->dispatcher->dispatch($scope, $dispatchLimits[$index]);
+            $recovery = $this->leases->recoverExpired(
+                $scope,
+                $connectionLimit,
+                max($connectionLimit, $this->scanLimit()),
+            );
             $recovered += $recovery->recovered;
             $quarantined += $recovery->quarantined;
             $deferred += $recovery->deferred;
@@ -47,12 +54,65 @@ final readonly class KernelHeartbeat
         );
     }
 
-    private function batchLimit(): int
+    private function connectionBatchLimit(): int
     {
         $configured = $this->config->get('integration-operations.queues.claim_batch_per_connection', 25);
 
         if (! is_int($configured) || $configured < 1 || $configured > 500) {
             throw new InvalidArgumentException('Integration operation heartbeat batch limit is invalid.');
+        }
+
+        return $configured;
+    }
+
+    /**
+     * @param  list<IntegrationScope>  $scopes
+     * @return list<int>
+     */
+    private function dispatchLimits(array $scopes, int $connectionLimit): array
+    {
+        $providerLimit = $this->providerBatchLimit();
+        $scopeCounts = [];
+
+        foreach ($scopes as $scope) {
+            $provider = $scope->provider->value;
+            $scopeCounts[$provider] = ($scopeCounts[$provider] ?? 0) + 1;
+        }
+
+        foreach ($scopeCounts as $scopeCount) {
+            if ($scopeCount > $providerLimit) {
+                throw new InvalidArgumentException(
+                    'Integration operation provider dispatch budget cannot serve every configured connection.',
+                );
+            }
+        }
+
+        $positions = [];
+        $limits = [];
+
+        foreach ($scopes as $scope) {
+            $provider = $scope->provider->value;
+            $scopeCount = $scopeCounts[$provider];
+            $position = $positions[$provider] ?? 0;
+            $fairShare = intdiv($providerLimit, $scopeCount);
+
+            if ($position < $providerLimit % $scopeCount) {
+                $fairShare++;
+            }
+
+            $limits[] = min($connectionLimit, $fairShare);
+            $positions[$provider] = $position + 1;
+        }
+
+        return $limits;
+    }
+
+    private function providerBatchLimit(): int
+    {
+        $configured = $this->config->get('integration-operations.queues.claim_batch_per_provider', 100);
+
+        if (! is_int($configured) || $configured < 1 || $configured > 5000) {
+            throw new InvalidArgumentException('Integration operation per-provider dispatch budget is invalid.');
         }
 
         return $configured;

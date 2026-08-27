@@ -49,6 +49,7 @@ use Cieplik206\IntegrationOperations\ValueObjects\IntentIdentity;
 use Cieplik206\IntegrationOperations\ValueObjects\LocalReference;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationActor;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationId;
+use Cieplik206\IntegrationOperations\ValueObjects\OperationReceipt;
 use Cieplik206\IntegrationOperations\ValueObjects\OperationType;
 use Cieplik206\IntegrationOperations\ValueObjects\PayloadEnvelopeBinding;
 use Cieplik206\IntegrationOperations\ValueObjects\Sha256Digest;
@@ -292,6 +293,65 @@ it('accepts idempotently, preserves the first context, fences dispatch, and obey
         ]);
 
     expect(fn () => $coordinator->accept($first))->toThrow(OperationIntentConflict::class);
+});
+
+it('round robins due operation types within one priority and connection budget', function (): void {
+    $configuration = coordinatorPostgresConfiguration();
+    config()->set('database.connections.integration_operations_test', $configuration);
+    config()->set('integration-operations.database.connection', 'integration_operations_test');
+    config()->set('integration-operations.queues.claim_batch_per_connection', 2);
+    config()->set('integration-operations.queues.redispatch_after_seconds', 60);
+
+    /** @var DatabaseManager $database */
+    $database = app('db');
+    $database->purge('integration_operations_test');
+    $connection = $database->connection('integration_operations_test');
+    assertCoordinatorTestDatabase($connection, $configuration['database']);
+
+    $migrationExitCode = app(ConsoleKernel::class)->call('migrate:fresh', [
+        '--database' => 'integration_operations_test',
+        '--path' => dirname(__DIR__, 3).'/database/migrations',
+        '--realpath' => true,
+        '--force' => true,
+    ]);
+
+    expect($migrationExitCode)->toBe(0);
+
+    insertFairnessWriterFence($connection, 'fixture_catalog.cost.sync');
+    insertFairnessWriterFence($connection, 'fixture_catalog.invoice.issue');
+
+    for ($index = 1; $index <= 6; $index++) {
+        insertFairnessPendingOperation(
+            $connection,
+            $index,
+            'fixture_catalog.cost.sync',
+        );
+    }
+
+    insertFairnessPendingOperation(
+        $connection,
+        7,
+        'fixture_catalog.invoice.issue',
+    );
+
+    $notifier = new RecordingAcceptanceNotifier;
+    $dispatcher = new DatabasePendingOperationDispatcher(
+        app(KernelDatabase::class),
+        $notifier,
+        app(Repository::class),
+    );
+
+    $batch = $dispatcher->dispatch(IntegrationScope::of('fixture_catalog', 'tenant:fairness'), 2);
+
+    expect($batch->scanned)->toBe(2)
+        ->and($batch->dispatched)->toBe(2)
+        ->and(array_map(
+            static fn (OperationReceipt $receipt): string => $receipt->operationType->value,
+            $notifier->receipts,
+        ))->toBe([
+            'fixture_catalog.cost.sync',
+            'fixture_catalog.invoice.issue',
+        ]);
 });
 
 it('fails closed and restores the exact transaction baseline after a hostile writer-fence resolver', function (): void {
@@ -1167,6 +1227,81 @@ function assertCoordinatorTestDatabase(Connection $connection, string $configure
     }
 
     PostgresTestDatabaseGuard::assertConnectedDatabase($configuredDatabase, $current->database_name);
+}
+
+function insertFairnessPendingOperation(Connection $connection, int $sequence, string $operationType): void
+{
+    $intentId = fairnessCoordinatorId($sequence * 2);
+    $operationId = fairnessCoordinatorId(($sequence * 2) + 1);
+    $semanticSlot = "fairness-{$sequence}";
+    $intentKey = hash('sha256', "fairness-intent-{$sequence}");
+    $acceptedAt = sprintf('2026-08-27 12:00:00.%06d+00', $sequence);
+
+    $connection->table('integration_operation_intents')->insert([
+        'id' => $intentId,
+        'provider' => 'fixture_catalog',
+        'connection_key' => 'tenant:fairness',
+        'operation_type' => $operationType,
+        'resource_type' => 'invoice',
+        'semantic_slot' => $semanticSlot,
+        'intent_key_hmac' => $intentKey,
+        'hmac_key_version' => 1,
+        'current_generation' => 1,
+        'current_operation_id' => $operationId,
+        'created_at' => $acceptedAt,
+        'updated_at' => $acceptedAt,
+    ]);
+    $connection->table('integration_operations')->insert([
+        'id' => $operationId,
+        'intent_id' => $intentId,
+        'intent_generation' => 1,
+        'provider' => 'fixture_catalog',
+        'connection_key' => 'tenant:fairness',
+        'operation_type' => $operationType,
+        'resource_type' => 'invoice',
+        'semantic_slot' => $semanticSlot,
+        'intent_key_hmac' => $intentKey,
+        'current_payload_revision' => 1,
+        'payload_schema_version' => 1,
+        'handler_version' => 1,
+        'result_schema_version' => 1,
+        'max_remote_writes' => 0,
+        'status' => OperationStatus::Pending->value,
+        'disposition' => 'in_progress',
+        'effect_state' => 'not_started',
+        'row_version' => 1,
+        'priority' => 0,
+        'attempts' => 0,
+        'reconcile_attempts' => 0,
+        'dispatch_attempts' => 0,
+        'writer_generation' => 1,
+        'owner_mode_at_accept' => OwnerMode::ShadowRead->value,
+        'accepted_at' => $acceptedAt,
+        'created_at' => $acceptedAt,
+        'updated_at' => $acceptedAt,
+    ]);
+}
+
+function insertFairnessWriterFence(Connection $connection, string $operationType): void
+{
+    $connection->table('integration_operation_writer_fences')->insert([
+        'provider' => 'fixture_catalog',
+        'connection_key' => 'tenant:fairness',
+        'operation_type' => $operationType,
+        'generation' => 1,
+        'owner_mode' => OwnerMode::ShadowRead->value,
+        'cohort_bound' => false,
+        'epoch' => 1,
+        'created_at' => '2026-08-27 12:00:00+00',
+        'updated_at' => '2026-08-27 12:00:00+00',
+    ]);
+}
+
+function fairnessCoordinatorId(int $sequence): string
+{
+    $alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+    return '01ARZ3NDEKTSV4RRFFQ69G5FA'.$alphabet[$sequence];
 }
 
 /** @return array{version: int, correlation_id: string|null, attributes: array<string, bool|int|string|null>} */

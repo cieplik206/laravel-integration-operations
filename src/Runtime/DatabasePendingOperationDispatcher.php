@@ -70,7 +70,7 @@ final readonly class DatabasePendingOperationDispatcher implements PendingOperat
     {
         $connection = $this->database->connection();
         $redispatchAfterSeconds = $this->redispatchAfterSeconds();
-        $rows = $connection->table('integration_operations as operation')
+        $eligible = $connection->table('integration_operations as operation')
             ->leftJoin(
                 'integration_operation_authoritative_states as authoritative',
                 'authoritative.operation_id',
@@ -82,7 +82,15 @@ final readonly class DatabasePendingOperationDispatcher implements PendingOperat
                 'operation.operation_type',
                 'operation.status',
                 'operation.row_version',
+                'operation.priority',
+                'operation.accepted_at',
             ])
+            ->selectRaw(<<<'SQL'
+                ROW_NUMBER() OVER (
+                    PARTITION BY operation.operation_type, operation.priority
+                    ORDER BY operation.accepted_at, operation.id
+                ) AS operation_type_rank
+                SQL)
             ->where('operation.provider', $scope->provider->value)
             ->where('operation.connection_key', $scope->connection->value)
             ->where(function ($query) use ($connection): void {
@@ -121,10 +129,20 @@ final readonly class DatabasePendingOperationDispatcher implements PendingOperat
             })
             ->whereNull('operation.lease_owner')
             ->whereNull('operation.lease_token_sha256')
-            ->whereNull('operation.active_attempt_id')
-            ->orderByDesc('operation.priority')
-            ->orderBy('operation.accepted_at')
-            ->orderBy('operation.id')
+            ->whereNull('operation.active_attempt_id');
+
+        $rows = $connection->query()
+            ->fromSub($eligible, 'candidate')
+            ->select([
+                'candidate.id',
+                'candidate.operation_type',
+                'candidate.status',
+                'candidate.row_version',
+            ])
+            ->orderByDesc('candidate.priority')
+            ->orderBy('candidate.operation_type_rank')
+            ->orderBy('candidate.accepted_at')
+            ->orderBy('candidate.id')
             ->limit($limit)
             ->get();
 
