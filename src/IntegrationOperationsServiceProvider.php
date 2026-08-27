@@ -7,6 +7,7 @@ namespace Cieplik206\IntegrationOperations;
 use Cieplik206\IntegrationOperations\Console\DoctorIntegrationOperationsCommand;
 use Cieplik206\IntegrationOperations\Console\HeartbeatIntegrationOperationsCommand;
 use Cieplik206\IntegrationOperations\Console\ListIntegrationOperationsCommand;
+use Cieplik206\IntegrationOperations\Console\PruneIntegrationOperationsCommand;
 use Cieplik206\IntegrationOperations\Console\ReconcileIntegrationOperationCommand;
 use Cieplik206\IntegrationOperations\Console\ResolveIntegrationOperationCommand;
 use Cieplik206\IntegrationOperations\Console\ShowIntegrationOperationCommand;
@@ -50,6 +51,8 @@ use Cieplik206\IntegrationOperations\Registry\ContainerBindingInspector;
 use Cieplik206\IntegrationOperations\Registry\DefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\OperationDefinitionValidator;
 use Cieplik206\IntegrationOperations\Registry\ProviderRegistrar;
+use Cieplik206\IntegrationOperations\Retention\DatabaseOperationRetentionPruner;
+use Cieplik206\IntegrationOperations\Retention\OperationRetentionPolicy;
 use Cieplik206\IntegrationOperations\Runtime\AuthoritativeOperationStateMachine;
 use Cieplik206\IntegrationOperations\Runtime\ConfiguredIntegrationScopes;
 use Cieplik206\IntegrationOperations\Runtime\DatabaseAuthoritativePollFinalizer;
@@ -107,6 +110,7 @@ final class IntegrationOperationsServiceProvider extends ServiceProvider
         $this->app->singleton(DatabaseAuthoritativeScopedOperationQueryFactory::class);
         $this->app->singleton(ConfiguredIntegrationScopes::class);
         $this->app->singleton(KernelHeartbeat::class);
+        $this->app->singleton(DatabaseOperationRetentionPruner::class);
         $this->app->singleton(DatabaseTransitionRecorder::class);
         $this->app->singleton(DatabaseWriterFenceAuthority::class);
         $this->app->singleton(DatabaseEffectBoundaryFactory::class);
@@ -148,6 +152,10 @@ final class IntegrationOperationsServiceProvider extends ServiceProvider
             LocalReferenceTypeRegistry::class,
             fn (Application $app): LocalReferenceTypeRegistry => $this->localReferenceTypeRegistry($app),
         );
+        $this->app->singleton(
+            OperationRetentionPolicy::class,
+            fn (Application $app): OperationRetentionPolicy => $this->retentionPolicy($app),
+        );
     }
 
     public function boot(): void
@@ -163,6 +171,7 @@ final class IntegrationOperationsServiceProvider extends ServiceProvider
                 DoctorIntegrationOperationsCommand::class,
                 HeartbeatIntegrationOperationsCommand::class,
                 ListIntegrationOperationsCommand::class,
+                PruneIntegrationOperationsCommand::class,
                 ReconcileIntegrationOperationCommand::class,
                 ResolveIntegrationOperationCommand::class,
                 ShowIntegrationOperationCommand::class,
@@ -251,5 +260,17 @@ final class IntegrationOperationsServiceProvider extends ServiceProvider
 
         /** @var list<string> $configured */
         return new ConfigLocalReferenceTypeRegistry($configured);
+    }
+
+    private function retentionPolicy(Application $app): OperationRetentionPolicy
+    {
+        $config = $app->make('config');
+
+        return new OperationRetentionPolicy(
+            rawPayloadDays: (int) $config->get('integration-operations.retention.raw_payload_days', 30),
+            attemptDiagnosticsDays: (int) $config->get('integration-operations.retention.attempt_diagnostics_days', 365),
+            terminalTombstoneDays: (int) $config->get('integration-operations.retention.terminal_tombstone_days', 1825),
+            batchSize: (int) $config->get('integration-operations.retention.batch_size', 500),
+        );
     }
 }

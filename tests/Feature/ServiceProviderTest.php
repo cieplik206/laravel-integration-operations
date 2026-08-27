@@ -19,6 +19,7 @@ use Cieplik206\IntegrationOperations\Queries\DatabaseOperationQuery;
 use Cieplik206\IntegrationOperations\Registry\AuthoritativeDefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\DefinitionRegistry;
 use Cieplik206\IntegrationOperations\Registry\RegistryFrozen;
+use Cieplik206\IntegrationOperations\Retention\OperationRetentionPolicy;
 use Cieplik206\IntegrationOperations\Runtime\DatabaseOperationLeaseManager;
 use Cieplik206\IntegrationOperations\Runtime\DatabaseOperationProcessor;
 use Cieplik206\IntegrationOperations\Runtime\DatabasePendingOperationDispatcher;
@@ -73,6 +74,15 @@ it('binds framework services without resolving secrets during boot', function ()
     expect(app(LookupHmacKeyRing::class)->activeVersion())->toBe(1);
 });
 
+it('binds the minimum five-year terminal tombstone retention policy', function (): void {
+    $policy = app(OperationRetentionPolicy::class);
+
+    expect($policy->rawPayloadDays)->toBe(30)
+        ->and($policy->attemptDiagnosticsDays)->toBe(365)
+        ->and($policy->terminalTombstoneDays)->toBe(1825)
+        ->and($policy->batchSize)->toBe(500);
+});
+
 it('resolves the lease runtime and its incident notifier through the package provider', function (): void {
     config()->set('integration-operations.hmac.active_version', 1);
     config()->set('integration-operations.hmac.keys', [1 => str_repeat('k', 32)]);
@@ -98,6 +108,7 @@ it('registers safe operational commands and withholds infrastructure failure det
             'integration-operations:doctor',
             'integration-operations:heartbeat',
             'integration-operations:list',
+            'integration-operations:prune',
             'integration-operations:reconcile',
             'integration-operations:resolve',
             'integration-operations:show',

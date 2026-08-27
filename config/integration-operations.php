@@ -95,7 +95,9 @@ return [
     ],
 
     'retention' => [
-        'terminal_tombstone_days' => 90,
+        'terminal_tombstone_days' => 1825,
         'raw_payload_days' => 30,
+        'attempt_diagnostics_days' => 365,
+        'batch_size' => 500,
     ],
 ];

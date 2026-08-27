@@ -130,7 +130,7 @@ it('enforces authoritative contracts, polling, projection, fairness, and compens
     expect(fn (): int => app(ConsoleKernel::class)->call('migrate:rollback', [
         '--database' => 'integration_operations_authoritative_test',
         '--force' => true,
-        '--step' => 1,
+        '--step' => 2,
     ]))->toThrow(
         RuntimeException::class,
         'Authoritative integration operation runtime data blocks migration rollback.',
@@ -150,7 +150,7 @@ it('enforces authoritative contracts, polling, projection, fairness, and compens
     $rollbackExitCode = app(ConsoleKernel::class)->call('migrate:rollback', [
         '--database' => 'integration_operations_authoritative_test',
         '--force' => true,
-        '--step' => 1,
+        '--step' => 2,
     ]);
 
     $operationConstraint = authoritativeConstraintDefinition($connection, 'io_operations_lifecycle_check');
