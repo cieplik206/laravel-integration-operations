@@ -29,6 +29,8 @@ Version 0.3 provides the durable RT-1/RT-2 boundary:
   contracts.
 - [Kernel Schema Specification 0.1](docs/schema-0.1.md) freezes the future
   persistence blueprint without shipping migrations or running DDL.
+- [Operations runbook](docs/operations-runbook.md) defines scoped diagnosis,
+  manual review, incident response, and N/N-1 rolling deployment.
 - [Provider SPI JSON Schema](contracts/provider-spi-0.1.schema.json) validates
   provider-neutral conformance manifests for both a read-only operation and a
   single-effect operation.
