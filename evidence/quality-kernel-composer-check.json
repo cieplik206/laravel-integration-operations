@@ -1,0 +1,11 @@
+{
+    "status": "passed",
+    "gate_id": "kernel-composer-check",
+    "repository": "kernel",
+    "command": "composer check",
+    "environment": "package",
+    "script_definition_sha256": "e0fe1abc57ba523730006a2b9dc9b607d99fd4c7679e509d76a0737d5fddb7ad",
+    "exit_code": 0,
+    "skipped_tests": 0,
+    "tested_tree_sha256": "86b935660fd7ced59580a4a1fa5faf7fc5d39caebdb90f14d18086c2098ccffc"
+}
