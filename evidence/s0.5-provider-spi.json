@@ -1,0 +1,29 @@
+{
+    "status": "passed",
+    "gate_id": "s0.5-provider-spi",
+    "repository": "kernel",
+    "tested_tree_sha256": "86b935660fd7ced59580a4a1fa5faf7fc5d39caebdb90f14d18086c2098ccffc",
+    "specification_path": "docs/provider-spi-0.1.md",
+    "specification_sha256": "95abf35fa592a08d0986eb0e4c979060166a7512355944bfda13e3ad76585a58",
+    "command": "XDEBUG_MODE=off ./vendor/bin/pest tests/Unit/ProviderSpiContractTest.php tests/Unit/RegistryConformanceTest.php tests/Architecture/ArchitectureTest.php --compact",
+    "exit_code": 0,
+    "tests": 73,
+    "assertions": 1273,
+    "full_quality_gate": {
+        "command": "XDEBUG_MODE=off composer check",
+        "exit_code": 0,
+        "default_tests": 522,
+        "default_assertions": 3339,
+        "postgres_tests": 77,
+        "postgres_assertions": 1071,
+        "redis_tests": 2,
+        "redis_assertions": 7,
+        "security_advisories": 0
+    },
+    "verified_contracts": [
+        "provider-spi-0.1",
+        "provider-manifest-conformance",
+        "provider-conformance-kit",
+        "kernel-provider-layer-boundaries"
+    ]
+}
